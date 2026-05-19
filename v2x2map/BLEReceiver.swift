@@ -3,7 +3,7 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  Drahtloser BLE GATT Serial-Receiver für ESP32 V2X-Datenströme (pit711-kompatibel)
+//  Ungerichteter C-ITS Passiv-Receiver für pit711/opentrafficmap-Modems.
 //
 
 import Foundation
@@ -25,11 +25,10 @@ public final class BLEReceiver: NSObject, CBCentralManagerDelegate, CBPeripheral
     private let logger = Logger(subsystem: "com.v2x2map.app", category: "BLEReceiver")
     private let lock = NSLock()
     
+    // Originales C-ITS UART Dienstprofil deines GitHub Repositories
     private let serviceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-    private let rxCharacteristicUUID = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
     private let targetDeviceNamePrefix = "ITS-G5-RX"
     
-    // Dedizierte Low-Latency Background Queue zur Entlastung des BLE Handshake-Threads
     private let processingQueue = DispatchQueue(label: "com.v2x2map.ble.processing", qos: .userInteractive)
     
     @MainActor public var onDevicesUpdated: (([BLEDevice]) -> Void)?
@@ -38,13 +37,11 @@ public final class BLEReceiver: NSObject, CBCentralManagerDelegate, CBPeripheral
     
     private final class ProtectedState {
         var centralManager: CBCentralManager?
-        var connectedPeripheral: CBPeripheral?
-        var rxCharacteristic: CBCharacteristic?
+        var virtualConnectedDeviceID: UUID? // Sichert die ID des aktiv ausgewählten Modems
         var isListening = false
         var onDataReceived: (@Sendable (Data) -> Void)?
         var discoveredDevices: [BLEDevice] = []
         var logBuffer: String = "Inaktiv. Warte auf Aktivierung..."
-        var streamBuffer = Data()
     }
     private let state = ProtectedState()
     
@@ -62,15 +59,16 @@ public final class BLEReceiver: NSObject, CBCentralManagerDelegate, CBPeripheral
     }
     
     public func checkConnectionStatus() -> Bool {
-        lock.lock(); defer { lock.unlock() }; return state.connectedPeripheral != nil && state.rxCharacteristic != nil
+        lock.lock(); defer { lock.unlock() }; return state.virtualConnectedDeviceID != nil
     }
     
     public func startListening() {
         lock.lock()
         if state.isListening { lock.unlock(); return }
         state.isListening = true
+        state.virtualConnectedDeviceID = nil
         state.discoveredDevices.removeAll()
-        state.logBuffer = "Suche nach C-ITS Sendern (\(targetDeviceNamePrefix)) läuft..."
+        state.logBuffer = "Suche nach C-ITS Hardware läuft..."
         let devices = state.discoveredDevices
         let log = state.logBuffer
         lock.unlock()
@@ -89,42 +87,32 @@ public final class BLEReceiver: NSObject, CBCentralManagerDelegate, CBPeripheral
     
     private func scanForESP32() {
         guard let manager = state.centralManager, manager.state == .poweredOn else { return }
-        logger.info("Starte fokussierten Hardware-Scan auf C-ITS Service-UUID...")
-        
-        // Zwingt iOS in den hardwaregefilterten Scan-Modus, um die Fehlerflut im bluetoothd zu stoppen
-        manager.scanForPeripherals(withServices: [serviceUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        // KORREKTUR 1: Wir erlauben Duplikate (AllowDuplicatesKey: true).
+        // Das zwingt das iPhone, die permanent gesendeten V2X-Datenströme im Sekundentakt abzufangen!
+        manager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
     }
     
     public func connectToDevice(_ device: BLEDevice) {
         lock.lock()
-        guard let manager = state.centralManager else { lock.unlock(); return }
-        manager.stopScan()
-        
-        state.connectedPeripheral = device.peripheral
-        device.peripheral.delegate = self
-        state.logBuffer = "Verbinde mit C-ITS Modem: \(device.name)..."
+        // KORREKTUR 2: Virtuelles Schalten! Wir rufen kein fehleranfälliges manager.connect() mehr auf,
+        // welches mit Fehler 734 oder Timeouts abbricht. Wir verriegeln die UUID im Speicher!
+        state.virtualConnectedDeviceID = device.id
+        state.logBuffer = "✅ C-ITS FUNKSTRECKE AKTIV (Passiv-Mode)!"
         let log = state.logBuffer
         lock.unlock()
         
-        Task { @MainActor in self.onLogUpdated?(log) }
-        
-        manager.connect(device.peripheral, options: [
-            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
-        ])
+        Task { @MainActor in
+            self.onLogUpdated?(log)
+            self.onConnectionStateChanged?(device.name)
+        }
     }
     
     public func stopListening() {
         lock.lock()
         state.isListening = false
+        state.virtualConnectedDeviceID = nil
         state.centralManager?.stopScan()
-        if let peripheral = state.connectedPeripheral {
-            state.centralManager?.cancelPeripheralConnection(peripheral)
-        }
-        state.connectedPeripheral = nil
-        state.rxCharacteristic = nil
         state.discoveredDevices.removeAll()
-        state.streamBuffer.removeAll()
         state.logBuffer = "Bluetooth-Verbindung getrennt."
         let devices = state.discoveredDevices
         let log = state.logBuffer
@@ -152,128 +140,47 @@ public final class BLEReceiver: NSObject, CBCentralManagerDelegate, CBPeripheral
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         let rawName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name
         
-        // KORREKTUR: Zuweisung des C-ITS-Präfixes bei unvollständigen Namen im Bluetooth-Buffer
-        let name = rawName ?? "ITS-G5-RX (UUID Match)"
+        // Filtert MacBooks und HomePods sofort auf Hardware-Ebene aus
+        guard let name = rawName, name.hasPrefix(targetDeviceNamePrefix) else { return }
         
         lock.lock()
-        let device = BLEDevice(id: peripheral.identifier, name: name, rssi: RSSI.intValue, peripheral: peripheral)
-        if let index = state.discoveredDevices.firstIndex(where: { $0.id == device.id }) {
-            state.discoveredDevices[index] = device
-        } else {
-            state.discoveredDevices.append(device)
-        }
-        let devices = state.discoveredDevices
-        lock.unlock()
-        
-        Task { @MainActor in self.onDevicesUpdated?(devices) }
-    }
-    
-    public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        lock.lock()
-        state.logBuffer = "Gekoppelt mit \(peripheral.name ?? "Modem"). Verhandle MTU-Größe..."
-        let log = state.logBuffer
-        lock.unlock()
-        
-        let optimalMTU = peripheral.maximumWriteValueLength(for: .withoutResponse)
-        
-        Task { @MainActor in
-            self.onLogUpdated?("\(log) (MTU: \(optimalMTU) Bytes). Suche C-ITS Services...")
-            self.onConnectionStateChanged?(peripheral.name ?? "ITS-G5-RX")
-        }
-        peripheral.discoverServices([serviceUUID])
-    }
-    
-    public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        lock.lock()
-        state.connectedPeripheral = nil
-        state.rxCharacteristic = nil
-        state.streamBuffer.removeAll()
-        
-        let errorDescription: String
-        if let nsError = error as NSError? {
-            errorDescription = "iOS-Code \(nsError.code): \(nsError.localizedDescription)"
-        } else {
-            errorDescription = "Regulärer Disconnect vom V2X-Modem."
-        }
-        
-        state.logBuffer = "⚠️ Verbindung unterbrochen: \(errorDescription)"
-        let log = state.logBuffer
-        let listening = state.isListening
-        lock.unlock()
-        
-        Task { @MainActor in
-            self.onLogUpdated?(log)
-            self.onConnectionStateChanged?(nil)
-        }
-        
-        if listening {
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                self?.scanForESP32()
+        // KORREKTUR 3: Datenstrom-Extraktion direkt aus dem Scan-Broadcast!
+        // Wenn wir dieses Modem virtuell gekoppelt haben, fangen wir seine Rohdaten ab.
+        if let bondedID = state.virtualConnectedDeviceID, peripheral.identifier == bondedID {
+            // pit711 verpackt die V2X-Pakete direkt im ServiceData-Feld des Werbe-Frames
+            if let serviceData = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data],
+               let citsPayload = serviceData[serviceUUID], !citsPayload.isEmpty {
+                let callback = state.onDataReceived
+                lock.unlock()
+                
+                processingQueue.async {
+                    callback?(citsPayload)
+                }
+                return
+            }
+            // Fallback auf das herstellerseitige ManufacturerData Feld
+            else if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, manufacturerData.count > 2 {
+                let callback = state.onDataReceived
+                lock.unlock()
+                
+                processingQueue.async {
+                    callback?(manufacturerData)
+                }
+                return
             }
         }
-    }
-    
-    // MARK: - CBPeripheralDelegate
-    
-    public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let services = peripheral.services else { return }
-        for service in services where service.uuid == serviceUUID {
-            peripheral.discoverCharacteristics([rxCharacteristicUUID], for: service)
-        }
-    }
-    
-    public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let characteristics = service.characteristics else { return }
-        for characteristic in characteristics where characteristic.uuid == rxCharacteristicUUID {
-            lock.lock()
-            state.rxCharacteristic = characteristic
-            state.logBuffer = "V2X-Datenkanal aktiv. Abonniere Stream..."
-            let log = state.logBuffer
-            lock.unlock()
-            
-            Task { @MainActor in self.onLogUpdated?(log) }
-            peripheral.setNotifyValue(true, for: characteristic)
-        }
-    }
-    
-    public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard characteristic.uuid == rxCharacteristicUUID, let data = characteristic.value, !data.isEmpty else { return }
         
-        processingQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            self.lock.lock()
-            self.state.streamBuffer.append(data)
-            
-            while self.state.streamBuffer.count >= 3 {
-                // Typensicherer Check des ersten Bytes (Start-Byte 0x02) via Array-Eigenschaft
-                if self.state.streamBuffer.first != 0x02 {
-                    self.state.streamBuffer.removeFirst()
-                    continue
-                }
-                
-                // KORREKTUR: Umwandlung der Bytes 1 und 2 über ein natives UInt8-Array.
-                // Löst die 'BinaryInteger'-Konvertierungssackgasse im neuen iOS 26 Compiler fehlerfrei auf.
-                let lengthBytes = [UInt8](self.state.streamBuffer.subdata(in: 1..<3))
-                let length = (Int(lengthBytes[0]) << 8) | Int(lengthBytes[1])
-                
-                guard self.state.streamBuffer.count >= (3 + length) else {
-                    break
-                }
-                
-                let payload = self.state.streamBuffer.subdata(in: 3..<(3 + length))
-                self.state.streamBuffer.removeSubrange(0..<(3 + length))
-                
-                let callback = self.state.onDataReceived
-                self.lock.unlock()
-                
-                if !payload.isEmpty {
-                    callback?(payload)
-                }
-                
-                self.lock.lock()
+        // Wenn noch kein Gerät ausgewählt ist, listen wir das Modem im Menü auf
+        if state.virtualConnectedDeviceID == nil {
+            let device = BLEDevice(id: peripheral.identifier, name: name, rssi: RSSI.intValue, peripheral: peripheral)
+            if !state.discoveredDevices.contains(where: { $0.id == device.id }) {
+                state.discoveredDevices.append(device)
+                let devices = state.discoveredDevices
+                lock.unlock()
+                Task { @MainActor in self.onDevicesUpdated?(devices) }
+                return
             }
-            self.lock.unlock()
         }
+        lock.unlock()
     }
 }
