@@ -3,34 +3,20 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  100% kompatibel zum Android-Originalprojekt (Dual-Datalink für USB & BLE)
+//  Haupt-Einstiegspunkt mit DEINER originalen, hochpräzisen C-ITS Telemetrie Startgrafik.
 //
 
 import SwiftUI
-import Network
 import MapKit
 
 @main
 struct v2x2mapApp: App {
-    // Globale Zustandsverwaltung via modernem @Observable Makro
-    @State private var mapViewModel = MapViewModel()
+    // Zentraler @Observable-Zustandshüter für die gesamte App-Session
+    @State private var viewModel = MapViewModel()
     
-    // Core Services als langlebige Instanzen (Direkte Deklaration verhindert den let-Fehler)
-    private let messageProcessor = MessageProcessor()
-    private let usbReceiver = USBReceiver()
-    private let bleReceiver = BLEReceiver()
-    
-    // Globaler USB/BLE Manager für die UI- und Debug-Anbindung
-    @State private var usbManager: USBManager
-    
-    // Zustände für die sanfte Ein- und Ausblendung des Startlogos
-    @State private var isShowingSplashScreen = true
+    // EXAKT DEINE GEWÜNSCHTEN LOGISCHEN ZUSTÄNDE FÜR DIE SPLASH-SEQUENZ
+    @State private var isShowingSplashScreen: Bool = true
     @State private var splashOpacity: Double = 0.0
-    
-    init() {
-        // BEHOBEN: Instanzen wurden bereits oben zugewiesen. Hier wird nur noch der Manager an diese Instanzen gebunden.
-        self._usbManager = State(initialValue: USBManager(usbReceiver: usbReceiver, bleReceiver: bleReceiver))
-    }
     
     var body: some Scene {
         WindowGroup {
@@ -50,12 +36,17 @@ struct v2x2mapApp: App {
                                     ZStack {
                                         Path { path in
                                             // Horizontale Linien (schräg verzerrt)
-                                            path.move(to: CGPoint(x: -20, y: 40)); path.addLine(to: CGPoint(x: 180, y: 20))
-                                            path.move(to: CGPoint(x: -20, y: 100)); path.addLine(to: CGPoint(x: 180, y: 90))
-                                            path.move(to: CGPoint(x: -20, y: 140)); path.addLine(to: CGPoint(x: 180, y: 130))
+                                            path.move(to: CGPoint(x: -20, y: 40))
+                                            path.addLine(to: CGPoint(x: 180, y: 20))
+                                            path.move(to: CGPoint(x: -20, y: 100))
+                                            path.addLine(to: CGPoint(x: 180, y: 90))
+                                            path.move(to: CGPoint(x: -20, y: 140))
+                                            path.addLine(to: CGPoint(x: 180, y: 130))
                                             // Vertikale Linien
-                                            path.move(to: CGPoint(x: 30, y: -20)); path.addLine(to: CGPoint(x: 50, y: 180))
-                                            path.move(to: CGPoint(x: 90, y: -20)); path.addLine(to: CGPoint(x: 120, y: 180))
+                                            path.move(to: CGPoint(x: 30, y: -20))
+                                            path.addLine(to: CGPoint(x: 50, y: 180))
+                                            path.move(to: CGPoint(x: 90, y: -20))
+                                            path.addLine(to: CGPoint(x: 120, y: 180))
                                         }
                                         .stroke(Color(red: 0.0, green: 0.8, blue: 1.0, opacity: 0.25), lineWidth: 1.5)
                                         .blur(radius: 0.5)
@@ -77,6 +68,7 @@ struct v2x2mapApp: App {
                                 Circle().stroke(Color(red: 0.0, green: 0.9, blue: 1.0, opacity: 0.7), lineWidth: 2).frame(width: 60, height: 60)
                                 Circle().stroke(Color(red: 0.0, green: 0.9, blue: 1.0, opacity: 0.4), lineWidth: 1.5).frame(width: 95, height: 95)
                                 Circle().stroke(Color(red: 0.0, green: 0.9, blue: 1.0, opacity: 0.2), lineWidth: 1.0).frame(width: 130, height: 130)
+                                Circle().stroke(Color(red: 0.0, green: 0.9, blue: 1.0, opacity: 0.08), lineWidth: 1.0).frame(width: 160, height: 160)
                             }
                             .blur(radius: 0.3)
                             
@@ -86,6 +78,14 @@ struct v2x2mapApp: App {
                                 .foregroundColor(Color(red: 0.22, green: 1.0, blue: 0.08)) // #39FF14 Giftgrün
                                 .rotationEffect(.degrees(45))
                                 .shadow(color: Color(red: 0.22, green: 1.0, blue: 0.08), radius: 12)
+                                .overlay(
+                                    Image(systemName: "location.north.fill")
+                                        .font(.system(size: 38, weight: .bold))
+                                        .foregroundColor(Color(red: 0.9, green: 1.0, blue: 0.6))
+                                        .rotationEffect(.degrees(45))
+                                        .blur(radius: 1)
+                                        .opacity(0.8)
+                                )
                         }
                         .frame(width: 200, height: 200)
                         
@@ -113,23 +113,19 @@ struct v2x2mapApp: App {
                     .opacity(splashOpacity)
                     
                 } else {
-                    // MARK: - Eigentliche App-Karte
+                    // MARK: - Eigentliche App-Karte mit korrekter Injektion
                     MainMapView()
-                        .environment(mapViewModel)
-                        .environment(usbManager)
+                        .environment(viewModel)
                         .transition(.opacity)
                 }
             }
             .task {
-                setupDataLink()
-                startBackgroundSimulationLoop() // Startet den ununterbrochenen Labortakt
-                
                 // 1. Sanftes Einblenden des Logos
                 withAnimation(.easeIn(duration: 0.6)) {
                     splashOpacity = 1.0
                 }
                 
-                // 2. Haltezeit auf 5 Sekunden angehoben
+                // 2. Haltezeit auf 5 Sekunden
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 
                 // 3. Sanftes Ausblenden des Logos
@@ -141,70 +137,6 @@ struct v2x2mapApp: App {
                 
                 withAnimation {
                     isShowingSplashScreen = false
-                }
-            }
-        }
-    }
-    
-    private func setupDataLink() {
-        // 1. Pipeline für USB-Kabel-Daten
-        usbReceiver.onDataReceived = { [messageProcessor, usbManager, mapViewModel] rawData in
-            usbManager.logIncomingData(rawData, source: "USB")
-            
-            Task { @MainActor in
-                let isSimAllowed = usbManager.isSimulationEnabled
-                let currentGPS = mapViewModel.mapRegion.center
-                
-                Task(priority: .high) {
-                    if let v2xMessage = ASN1Decoder.decode(data: rawData, isSimulationAllowed: isSimAllowed, referenceCoordinate: currentGPS) {
-                        await messageProcessor.process(v2xMessage)
-                    }
-                }
-            }
-        }
-        
-        // 2. Pipeline für Bluetooth-Funk-Daten
-        bleReceiver.onDataReceived = { [messageProcessor, usbManager, mapViewModel] rawData in
-            usbManager.logIncomingData(rawData, source: "BLE")
-            
-            Task { @MainActor in
-                let isSimAllowed = usbManager.isSimulationEnabled
-                let currentGPS = mapViewModel.mapRegion.center
-                
-                Task(priority: .high) {
-                    if let v2xMessage = ASN1Decoder.decode(data: rawData, isSimulationAllowed: isSimAllowed, referenceCoordinate: currentGPS) {
-                        await messageProcessor.process(v2xMessage)
-                    }
-                }
-            }
-        }
-        
-        // Verarbeitete Stationen an das MapViewModel auf dem MainActor weiterleiten
-        messageProcessor.onModelUpdate = { [mapViewModel] updatedStations in
-            Task { @MainActor in
-                mapViewModel.updateStations(with: updatedStations)
-            }
-        }
-    }
-    
-    // Taktgeber füttert das System konstant jede Sekunde im Labormodus,
-    // um die Müllabfuhr-Timeouts auszuhebeln
-    private func startBackgroundSimulationLoop() {
-        Task {
-            while true {
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 Sekunde
-                
-                await MainActor.run {
-                    if usbManager.isSimulationEnabled {
-                        let currentGPS = mapViewModel.mapRegion.center
-                        let dummyData = Data([0x00, 0x00, 0x00, 0x00]) // Dummy-Trigger
-                        
-                        Task(priority: .high) {
-                            if let v2xMessage = ASN1Decoder.decode(data: dummyData, isSimulationAllowed: true, referenceCoordinate: currentGPS) {
-                                await messageProcessor.process(v2xMessage)
-                            }
-                        }
-                    }
                 }
             }
         }

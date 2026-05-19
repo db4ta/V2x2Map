@@ -24,20 +24,47 @@ public final class USBManager: @unchecked Sendable {
     public var bleIsConnected: Bool = false
     public var bleIsEnabled: Bool = false
     
-    // NEU: Manueller Schalter für die Labor-Simulation
     public var isSimulationEnabled: Bool = false
     
     public private(set) var debugLog: [LogEntry] = []
     public private(set) var packetCount: UInt64 = 0
     
-    private let usbReceiver: USBReceiver
-    private let bleReceiver: BLEReceiver
+    // NEU: Veröffentlichter Zustand gefundener Geräte direkt im Hardware-Zustandshüter
+    public var discoveredBLEDevices: [BLEDevice] = []
+    
+    public let usbReceiver: USBReceiver
+    public let bleReceiver: BLEReceiver
     private let lock = NSLock()
     private let maxLogLines = 50
     
     public init(usbReceiver: USBReceiver, bleReceiver: BLEReceiver) {
         self.usbReceiver = usbReceiver
         self.bleReceiver = bleReceiver
+        
+        // KORREKTUR: Datenbrücke fängt nun die Live-Bytes vom transparenten C-ITS Modem ab
+        self.bleReceiver.onDataReceived = { [weak self] data in
+            self?.logIncomingData(data, source: "BLE")
+        }
+        
+        // KORREKTUR: Synchronisierung der Bluetooth-Ereignisse direkt mit dem DebugLog des Managers
+        self.bleReceiver.onDevicesUpdated = { [weak self] devices in
+            Task { @MainActor in self?.discoveredBLEDevices = devices }
+        }
+        
+        self.bleReceiver.onLogUpdated = { [weak self] logLine in
+            Task { @MainActor in self?.logDebug(logLine, type: .info) }
+        }
+        
+        self.bleReceiver.onConnectionStateChanged = { [weak self] name in
+            Task { @MainActor in
+                self?.bleIsConnected = (name != nil)
+                if let deviceName = name {
+                    self?.logDebug("Modem-Zustand: Verbunden mit \(deviceName)", type: .info)
+                } else {
+                    self?.logDebug("Modem-Zustand: Getrennt", type: .error)
+                }
+            }
+        }
     }
     
     @MainActor
@@ -50,15 +77,22 @@ public final class USBManager: @unchecked Sendable {
             logDebug("Scanne USB-Bus nach ESP32-C5 (CDC-ACM)...", type: .info)
             usbReceiver.startListening()
             try? await Task.sleep(nanoseconds: 200_000_000)
+            
+            lock.lock()
             self.usbIsConnected = usbReceiver.checkConnectionStatus()
-            if self.usbIsConnected {
+            let connected = self.usbIsConnected
+            lock.unlock()
+            
+            if connected {
                 logDebug("USB-Schnittstelle geöffnet. Warte auf V2X-Kabeldaten...", type: .info)
             } else {
                 logDebug("[WARNUNG]: USB-CDC Gerät blockiert oder nicht gefunden.", type: .error)
             }
         } else {
             usbReceiver.stopListening()
+            lock.lock()
             self.usbIsConnected = false
+            lock.unlock()
             logDebug("USB-Schnittstelle manuell geschlossen.", type: .info)
         }
     }
@@ -74,7 +108,10 @@ public final class USBManager: @unchecked Sendable {
             bleReceiver.startListening()
         } else {
             bleReceiver.stopListening()
+            lock.lock()
             self.bleIsConnected = false
+            self.discoveredBLEDevices.removeAll()
+            lock.unlock()
             logDebug("Bluetooth LE Funkverbindung manuell gestoppt.", type: .info)
         }
     }
@@ -89,8 +126,11 @@ public final class USBManager: @unchecked Sendable {
             self.packetCount += 1
             if source == "USB" { self.usbIsConnected = true }
             if source == "BLE" { self.bleIsConnected = true }
-            debugLog.append(LogEntry(text: logLine, type: .rx))
-            if debugLog.count > maxLogLines { debugLog.removeFirst() }
+            
+            self.debugLog.append(LogEntry(text: logLine, type: .rx))
+            if self.debugLog.count > maxLogLines {
+                self.debugLog.removeFirst()
+            }
             lock.unlock()
         }
     }
@@ -112,7 +152,7 @@ public final class USBManager: @unchecked Sendable {
     }
     
     @MainActor
-    private func logDebug(_ text: String, type: LogEntry.LogType) {
+    public func logDebug(_ text: String, type: LogEntry.LogType) {
         lock.lock()
         debugLog.append(LogEntry(text: text, type: type))
         lock.unlock()
