@@ -8,86 +8,27 @@
 import Foundation
 import CoreLocation
 
-public struct MapStation: Identifiable, Sendable, Equatable {
-    public let id: String
-    public let stationID: UInt32
+public struct MapStation: Identifiable, Equatable {
+    public let id = UUID()
+    public let stationID: Int
     public let coordinate: CLLocationCoordinate2D
-    public let stationType: ETSIStationType
-    public let speedKmH: Double?
-    public let heading: Double?
-    public let primaryMessageType: V2XMessageType
-    public let eventLabel: String?
-    public let lastUpdatedAt: Date
+    public let speed: Double   // in m/s
+    public let heading: Double // in Grad
+    public let isHazard: Bool  // true = DENM (Alarm), false = CAM (Fahrzeug)
     
-    // NEU: Verfolgung des ersten Kontakts für die Zeit-X-Überwachung
-    public let firstDetectedAt: Date
+    // KORREKTUR: Exakter Variablenname aus deinem originalen GitHub-Code
+    public var lastUpdatedAt: Date
     
-    public var isMoving: Bool {
-        guard let speed = speedKmH else { return false }
-        return speed > AppConfig.Filters.minimumSpeedThreshold * 3.6
-    }
-    
-    public var isHazard: Bool { return primaryMessageType == .denm }
-    
-    // NEU: Prüft reaktiv auf dem MainActor, ob das Objekt das eingestellte Zeit-X-Limit überschreitet
-    @MainActor
-    public var exceedsAlertThreshold: Bool {
-        let durationSeconds = Date().timeIntervalSince(firstDetectedAt)
-        let thresholdSeconds = AppConfig.StationLifecycle.alertThresholdMinutes * 60.0
-        return durationSeconds >= thresholdSeconds
-    }
-    
-    public init(id: String, stationID: UInt32, coordinate: CLLocationCoordinate2D, stationType: ETSIStationType, speedKmH: Double? = nil, heading: Double? = nil, primaryMessageType: V2XMessageType, eventLabel: String? = nil, lastUpdatedAt: Date = Date(), firstDetectedAt: Date = Date()) {
-        self.id = id
+    public init(stationID: Int, coordinate: CLLocationCoordinate2D, speed: Double, heading: Double, isHazard: Bool, lastUpdatedAt: Date = Date()) {
         self.stationID = stationID
         self.coordinate = coordinate
-        self.stationType = stationType
-        self.speedKmH = speedKmH
+        self.speed = speed
         self.heading = heading
-        self.primaryMessageType = primaryMessageType
-        self.eventLabel = eventLabel
+        self.isHazard = isHazard
         self.lastUpdatedAt = lastUpdatedAt
-        self.firstDetectedAt = firstDetectedAt
-    }
-    
-    public static func from(camMessage: V2XMessage, existingStation: MapStation? = nil) -> MapStation? {
-        guard let payload = camMessage.camPayload else { return nil }
-        return MapStation(
-            id: String(camMessage.stationID),
-            stationID: camMessage.stationID,
-            coordinate: camMessage.coordinate,
-            stationType: payload.stationType,
-            speedKmH: payload.speedKmH,
-            heading: payload.heading,
-            primaryMessageType: .cam,
-            eventLabel: nil,
-            lastUpdatedAt: Date(),
-            firstDetectedAt: existingStation?.firstDetectedAt ?? Date() // Behält den ersten Kontakt bei Updates
-        )
-    }
-    
-    public static func from(denmMessage: V2XMessage, existingStation: MapStation? = nil) -> MapStation? {
-        guard let payload = denmMessage.denmPayload else { return nil }
-        return MapStation(
-            id: payload.actionID,
-            stationID: denmMessage.stationID,
-            coordinate: denmMessage.coordinate,
-            stationType: .unknown,
-            speedKmH: nil,
-            heading: nil,
-            primaryMessageType: .denm,
-            eventLabel: payload.eventDescription,
-            lastUpdatedAt: Date(),
-            firstDetectedAt: existingStation?.firstDetectedAt ?? Date()
-        )
-    }
-    
-    // Equatable Konformität für reibungslose SwiftUI-Listen-Updates
-    public static func qquatable(lhs: MapStation, rhs: MapStation) -> Bool {
-        return lhs.id == rhs.id && lhs.lastUpdatedAt == rhs.lastUpdatedAt
     }
     
     public static func == (lhs: MapStation, rhs: MapStation) -> Bool {
-        return lhs.id == rhs.id && lhs.lastUpdatedAt == rhs.lastUpdatedAt
+        lhs.id == rhs.id && lhs.lastUpdatedAt == rhs.lastUpdatedAt
     }
 }

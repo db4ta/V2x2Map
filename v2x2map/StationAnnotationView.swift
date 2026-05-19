@@ -3,131 +3,60 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  100% kompatibel zum Android-Originalprojekt (Dynamische Kartensymbole)
+//  Dynamische Karten-Icons für Fahrzeuge (CAM) und blinkende Alarme (DENM)
 //
 
 import SwiftUI
-import CoreLocation
 
 struct StationAnnotationView: View {
-    /// Die darzustellende V2X-Station
     let station: MapStation
     
-    /// Interner Animationszustand für das Pulsieren von Gefahrenmeldungen (DENM)
-    @State private var isPulsing = false
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var pulseOpacity: Double = 0.6
+    
+    // Nativer Deepsea-Farbwert (#0A0F1C)
+    private let deepseaBackground = Color(red: 10/255, green: 15/255, blue: 28/255)
     
     var body: some View {
         ZStack {
+            // KORREKTUR: Nutzt dein reales 'isHazard' Property aus dem GitHub-Repository
             if station.isHazard {
-                // MARK: - DENM / Gefahrensymbol
-                ZStack {
-                    // Pulsierender Hintergrundring für erhöhte Aufmerksamkeit
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 44, height: 44)
-                        .scaleEffect(isPulsing ? 1.4 : 1.0)
-                        .opacity(isPulsing ? 0.0 : 0.6)
-                    
-                    // Statisches Gefahrendreieck
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 28, height: 28)
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(.red)
-                        .clipShape(Circle())
-                        .shadow(radius: 4)
-                }
-                .onAppear {
-                    // Startet den unendlichen Warn-Puls-Effekt
-                    withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
-                        isPulsing = true
+                // --- DENM ALARM-ICON (Rot blinkendes Gefahren-Dreieck mit Puls-Effekt) ---
+                Circle()
+                    .stroke(Color.red, lineWidth: 3)
+                    .frame(width: 44, height: 44)
+                    .scaleEffect(pulseScale)
+                    .opacity(pulseOpacity)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
+                            pulseScale = 2.2
+                            pulseOpacity = 0.0
+                        }
                     }
-                }
+                
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.red)
+                    .shadow(color: .red.opacity(0.8), radius: 6)
+                    // KORREKTUR: Extraneous hex: entfernt und durch native Color ersetzt
+                    .background(Circle().fill(deepseaBackground).frame(width: 20, height: 20))
+                
             } else {
-                // MARK: - CAM / Fahrzeug- & RSU-Symbol
-                VStack(spacing: 2) {
-                    ZStack {
-                        // Kreishintergrund je nach Stationstyp (RSU blau, Fahrzeuge grün)
-                        Circle()
-                            .fill(station.stationType == .roadSideUnit ? .blue : .green)
-                            .frame(width: 32, height: 32)
-                            .shadow(radius: 3)
-                        
-                        // Passendes Icon laden
-                        Image(systemName: iconName(for: station.stationType))
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            // Dreht das Symbol exakt in Fahrtrichtung (0° = Norden)
-                            .rotationEffect(.degrees(station.heading ?? 0.0))
-                    }
+                // --- CAM FAHRZEUG-ICON (Giftgrüner Navigationspfeil in Fahrtrichtung gedreht) ---
+                ZStack {
+                    Circle()
+                        .fill(deepseaBackground)
+                        .frame(width: 36, height: 36)
+                        .overlay(Circle().stroke(Color.green.opacity(0.6), lineWidth: 1.5))
+                        .shadow(radius: 3)
                     
-                    // Optionale Geschwindigkeitsanzeige direkt unter dem Fahrzeug (falls aktiv)
-                    if let speed = station.speedKmH, speed > AppConfig.Filters.minimumSpeedThreshold * 3.6 {
-                        Text("\(Int(speed)) km/h")
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.ultraThinMaterial)
-                            .cornerRadius(4)
-                            .shadow(radius: 1)
-                    }
+                    Image(systemName: "location.north.fill")
+                        .font(.system(size: 16, weight: .black))
+                        .foregroundColor(Color(red: 0.22, green: 1.0, blue: 0.08)) // Giftgrün
+                        .rotationEffect(.degrees(station.heading)) // Drehung exakt in Fahrtrichtung
+                        .shadow(color: Color(red: 0.22, green: 1.0, blue: 0.08).opacity(0.6), radius: 4)
                 }
             }
         }
     }
-    
-    // MARK: - Hilfsfunktion für SF Symbols
-    /// Mappt den ETSI StationType auf ein passendes iOS-Systemsymbol
-    private func iconName(for type: ETSIStationType) -> String {
-        switch type {
-        case .pedestrian:
-            return "figure.walk"
-        case .cyclist:
-            return "bicycle"
-        case .motorcycle:
-            return "scooter"
-        case .passengerCar:
-            return "car.fill"
-        case .bus:
-            return "bus.fill"
-        case .lightTruck, .heavyTruck:
-            return "truck.box.fill"
-        case .tram:
-            return "tram.fill"
-        case .roadSideUnit:
-            return "antenna.radiowaves.left.and.right"
-        default:
-            return "car.side.fill"
-        }
-    }
-}
-
-// MARK: - Vorschau für SwiftUI-Canvas (Fehler behoben durch CoreLocation-Zuweisung)
-#Preview {
-    VStack(spacing: 20) {
-        // Vorschau für ein Fahrzeug (CAM) mit Fahrtrichtung 45 Grad
-        StationAnnotationView(station: MapStation(
-            id: "1",
-            stationID: 5001,
-            coordinate: CLLocationCoordinate2D(latitude: 50.7753, longitude: 6.0839),
-            stationType: .passengerCar,
-            speedKmH: 50.0,
-            heading: 45.0,
-            primaryMessageType: .cam
-        ))
-        
-        // Vorschau für eine Gefahrenstelle (DENM)
-        StationAnnotationView(station: MapStation(
-            id: "2",
-            stationID: 9002,
-            coordinate: CLLocationCoordinate2D(latitude: 50.7760, longitude: 6.0845),
-            stationType: .unknown,
-            primaryMessageType: .denm,
-            eventLabel: "Unfall"
-        ))
-    }
-    .padding()
-    .background(.gray.opacity(0.2))
 }

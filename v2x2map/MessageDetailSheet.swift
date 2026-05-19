@@ -3,104 +3,117 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  100% kompatibel zum Android-Originalprojekt (Detaillierte ASN.1-Ansicht)
+//  Detaillierte Protokoll-Aufschlüsselung für selektierte V2X-Teilnehmer (CAM/DENM)
 //
 
 import SwiftUI
-import CoreLocation // Hinzugefügt: Löst den _LocationEssentials Fehler
+import CoreLocation // ZWINGEND ERFORDERLICH für .latitude und .longitude Properties
 
 struct MessageDetailSheet: View {
-    /// Die ausgewählte Station, deren ASN.1-Felder angezeigt werden
     let station: MapStation
     
-    /// Ermöglicht das Schließen des Sheets über die Umgebung
     @Environment(\.dismiss) private var dismiss
+    
+    // Nativer Deepsea-Farbwert für Konsolen-Feeling
+    private let deepseaBackground = Color(red: 10/255, green: 15/255, blue: 28/255)
     
     var body: some View {
         NavigationStack {
-            List {
-                // MARK: - Sektion 1: Allgemeine ETSI Metadaten
-                Section(header: Text("Allgemeine C-ITS Header")) {
-                    LabeledContent("Station ID", value: "\(station.stationID)")
-                    LabeledContent("Protokoll-Typ", value: station.primaryMessageType.rawValue)
-                    LabeledContent("Letztes Update", value: station.lastUpdatedAt.formatted(date: .omitted, time: .standard))
+            ZStack {
+                // Hintergrund-Styling je nach Nachrichtentyp (Rot bei Alarm, Dunkelblau bei Standard)
+                if station.isHazard {
+                    Color.red.opacity(0.06).ignoresSafeArea()
+                } else {
+                    deepseaBackground.opacity(0.02).ignoresSafeArea()
                 }
                 
-                // MARK: - Sektion 2: Geografische Daten
-                Section(header: Text("Geografische Position")) {
-                    LabeledContent("Breitengrad (Lat)", value: String(format: "%.7f°", station.coordinate.latitude))
-                    LabeledContent("Längengrad (Lon)", value: String(format: "%.7f°", station.coordinate.longitude))
-                }
-                
-                // MARK: - Sektion 3: Spezifische CAM Nutzdaten
-                if station.primaryMessageType == .cam {
-                    Section(header: Text("Cooperative Awareness Payload (CAM)")) {
-                        LabeledContent("Stationstyp", value: translateStationType(station.stationType))
-                        
-                        if let heading = station.heading {
-                            LabeledContent("Fahrtrichtung", value: String(format: "%.1f°", heading))
-                        } else {
-                            LabeledContent("Fahrtrichtung", value: "N/A")
+                Form {
+                    // Sektion 1: Kern-Identifikation & C-ITS Typ
+                    Section(header: Text("🚨 ETSI Protokoll-Header")) {
+                        HStack {
+                            Text("Nachrichten-Typ:")
+                            Spacer()
+                            Text(station.isHazard ? "DENM (Gefahrenmeldung)" : "CAM (Fahrzeugtelegramm)")
+                                .bold()
+                                .foregroundColor(station.isHazard ? .red : .green)
                         }
                         
-                        if let speed = station.speedKmH {
-                            LabeledContent("Geschwindigkeit", value: String(format: "%.1f km/h", speed))
-                        } else {
-                            LabeledContent("Geschwindigkeit", value: "0.0 km/h")
+                        HStack {
+                            Text("Station ID:")
+                            Spacer()
+                            Text("\(station.stationID)")
+                                .font(.system(.body, design: .monospaced))
+                                .bold()
+                        }
+                        
+                        HStack {
+                            Text("Letztes Signal:")
+                            Spacer()
+                            Text(station.lastUpdatedAt.formatted(date: .omitted, time: .standard))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
                         }
                     }
-                }
-                
-                // MARK: - Sektion 4: Spezifische DENM Nutzdaten
-                if station.primaryMessageType == .denm {
-                    Section(header: Text("Decentralized Environmental Payload (DENM)")) {
-                        LabeledContent("Gefahrenmeldung", value: station.eventLabel ?? "Unbekanntes Ereignis")
-                        LabeledContent("Ereignis-ID", value: station.id)
+                    
+                    // Sektion 2: Telemetrie & Kinematik (Geschwindigkeit & Richtung)
+                    Section(header: Text("🚗 Kinematische Telemetrie")) {
+                        HStack {
+                            Text("Geschwindigkeit:")
+                            Spacer()
+                            // Umrechnung von m/s in km/h (station.speed * 3.6)
+                            Text("\(Int(station.speed * 3.6)) km/h")
+                                .bold()
+                            Text("(\(station.speed.formatted(.number.precision(.fractionLength(1)))) m/s)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        HStack {
+                            Text("Fahrtrichtung (Heading):")
+                            Spacer()
+                            Text("\(Int(station.heading))°")
+                                .bold()
+                            Text(getCompassDirection(heading: station.heading))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 35, alignment: .trailing)
+                        }
+                    }
+                    
+                    // Sektion 3: Geografischer ASN.1 Auszug
+                    Section(header: Text("🌐 Geografische Position (WGS84)")) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Breitengrad (Lat):")
+                                Spacer()
+                                Text("\(station.coordinate.latitude.formatted(.number.precision(.fractionLength(6))))")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                            HStack {
+                                Text("Längengrad (Lon):")
+                                Spacer()
+                                Text("\(station.coordinate.longitude.formatted(.number.precision(.fractionLength(6))))")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
             }
-            .navigationTitle("ASN.1 Protokoll-Details")
+            .navigationTitle(station.isHazard ? "⚠️ C-ITS Warnung" : "📡 V2X Live-Daten")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Schließen") {
-                        dismiss()
-                    }
+                    Button("Schließen") { dismiss() }
                 }
             }
         }
     }
     
-    // MARK: - Hilfsmethoden zur Textübersetzung
-    /// Übersetzt den ETSI StationType in ein lesbares, deutsches Äquivalent
-    private func translateStationType(_ type: ETSIStationType) -> String {
-        switch type {
-        case .pedestrian: return "Fußgänger (1)"
-        case .cyclist: return "Fahrradfahrer (2)"
-        case .moped: return "Mofa / Moped (3)"
-        case .motorcycle: return "Motorrad (4)"
-        case .passengerCar: return "Personenkraftwagen / PKW (5)"
-        case .bus: return "Omnibus (6)"
-        case .lightTruck: return "Leichter LKW (7)"
-        case .heavyTruck: return "Schwerer LKW (8)"
-        case .trailer: return "Anhänger (9)"
-        case .specialVehicles: return "Einsatzfahrzeug (10)"
-        case .tram: return "Straßenbahn (11)"
-        case .roadSideUnit: return "Infrastruktur / RSU (15)"
-        case .unknown: return "Unbekannter Typ (0)"
-        }
+    // Hilfsfunktion zur Ermittlung der Himmelsrichtung aus dem Heading-Wert
+    private func getCompassDirection(heading: Double) -> String {
+        let directions = ["N", "NO", "O", "SO", "S", "SW", "W", "NW", "N"]
+        let index = Int((heading + 22.5) / 45.0) & 7
+        return directions[index]
     }
-}
-
-// MARK: - Vorschau für SwiftUI-Canvas (Fehler behoben durch explizite Zuweisung)
-#Preview {
-    MessageDetailSheet(station: MapStation(
-        id: "CAM_5001",
-        stationID: 5001,
-        coordinate: CLLocationCoordinate2D(latitude: 50.7753, longitude: 6.0839),
-        stationType: .passengerCar,
-        speedKmH: 48.5,
-        heading: 120.0,
-        primaryMessageType: .cam
-    ))
 }

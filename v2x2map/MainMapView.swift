@@ -3,7 +3,6 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  Vollständiges Haupt-Kartenfenster mit Live-Zentrierung, Einstellungs-Menü und Hex-Debug-Log.
 //
 
 import SwiftUI
@@ -11,30 +10,27 @@ import MapKit
 
 struct MainMapView: View {
     @Environment(MapViewModel.self) private var viewModel
-    
-    // Zentraler Hardware-Manager deiner Git-Architektur
     @State private var usbManager = USBManager(usbReceiver: USBReceiver(), bleReceiver: BLEReceiver())
     
     @State private var showSettings: Bool = false
+    @State private var showStationList: Bool = false
     @State private var selectedStation: MapStation? = nil
     
     private let deepseaBackground = Color(red: 10/255, green: 15/255, blue: 28/255)
     
     var body: some View {
+        @Bindable var vm = viewModel
         @Bindable var um = usbManager
         
         NavigationStack {
             ZStack {
-                // 1. KORREKTUR: Stabile, parameterlose Map-Variante eliminiert Selection- und Typenkonflikte vollständig
-                Map {
+                // 1. MapKit Live-Karte mit der stabilen, parameterlosen Inhalts-API
+                Map(position: $vm.cameraPosition) {
                     UserAnnotation()
                     
-                    // Sauberes Flachklopfen des Dictionarys in ein Werte-Array
+                    // Rendert die aus den Bytes decodierten V2X-Stationen
                     ForEach(Array(viewModel.stations.values)) { station in
-                        Annotation(
-                            "Station \(station.stationID)",
-                            coordinate: station.coordinate
-                        ) {
+                        Annotation("Station \(station.stationID)", coordinate: station.coordinate) {
                             StationAnnotationView(station: station)
                                 .onTapGesture {
                                     // Öffnet das Detail-Sheet sicher über deine bestehende Tap-Logik
@@ -71,6 +67,17 @@ struct MainMapView: View {
                         }
                         
                         Spacer()
+                        
+                        Button(action: { showStationList.toggle() }) {
+                            Image(systemName: "list.bullet.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(deepseaBackground.opacity(0.85))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.cyan.opacity(0.5), lineWidth: 1))
+                        }
+                        .padding(.trailing, 8)
                         
                         Button(action: { withAnimation { showSettings.toggle() } }) {
                             Image(systemName: "gearshape.fill")
@@ -122,7 +129,6 @@ struct MainMapView: View {
                                         }
                                         .tint(.green)
                                         
-                                        // Weiterleitung zur WirelessSettingsView
                                         NavigationLink(destination: WirelessSettingsView(usbManager: usbManager)) {
                                             HStack {
                                                 Label("Drahtlos-Setup (BLE)", systemImage: "wifi")
@@ -161,7 +167,7 @@ struct MainMapView: View {
                                 Divider()
                                     .background(Color.cyan.opacity(0.3))
                                 
-                                // --- SCHWARZES SERIELLES DEBUG-TERMINAL ---
+                                // Debug Terminal
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack {
                                         Text("Serielles Hex-Debug-Log")
@@ -221,6 +227,10 @@ struct MainMapView: View {
                     }
                     .background(Color.black.opacity(0.4).onTapGesture { withAnimation { showSettings = false } })
                 }
+            }
+            .sheet(isPresented: $showStationList) {
+                StationListView()
+                    .presentationDetents([.medium, .large])
             }
             .sheet(item: $selectedStation) { station in
                 MessageDetailSheet(station: station)

@@ -5,82 +5,116 @@
 //  Created for iOS 26.
 //
 
-import Foundation
+import SwiftUI
 import MapKit
 import CoreLocation
-import Observation
-import SwiftUI
+import Foundation
+import OSLog
 
-@MainActor
 @Observable
+@MainActor
 public final class MapViewModel: NSObject, CLLocationManagerDelegate {
     
-    // MARK: - UI-Zustand
-    public private(set) var stations: [String: MapStation] = [:]
-    public var mapRegion: MKCoordinateRegion
-    public var isTrackingUserLocation: Bool = true
-    public var selectedStation: MapStation? = nil
+    private let logger = Logger(subsystem: "com.v2x2map.app", category: "MapViewModel")
     
     private let locationManager = CLLocationManager()
+    private let messageProcessor = MessageProcessor()
+    
+    public let bleReceiver = BLEReceiver()
+    
+    // KORREKTUR: Verwendung deines originalen Stations-Dictionarys
+    public var stations: [String: MapStation] = [:]
+    public var isTrackingUserLocation: Bool = true
+    public var cameraPosition: MapKit.MapCameraPosition = .automatic
+    private var lastUserLocation: CLLocation?
     
     public override init() {
-        // Initiale Region ist Stuttgart (Fallback)
-        self.mapRegion = MKCoordinateRegion(
-            center: AppConfig.Map.defaultCenter,
-            latitudinalMeters: AppConfig.Map.defaultRadiusInMeters,
-            longitudinalMeters: AppConfig.Map.defaultRadiusInMeters
-        )
         super.init()
-        
+        setupLocationManager()
+        setupHardwarePipeline()
+        startLifecycleTimer()
+    }
+    
+    private func setupLocationManager() {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.distanceFilter = 1.0
         
-        // BEHOBEN: GPS wird sofort im Hintergrund hochgefahren, um die Karte direkt auszurichten
-        locationManager.requestWhenInUseAuthorization()
-        locationManager.startUpdatingLocation()
+        if locationManager.authorizationStatus == .notDetermined {
+            locationManager.requestAlwaysAuthorization()
+        } else if locationManager.authorizationStatus == .authorizedAlways || locationManager.authorizationStatus == .authorizedWhenInUse {
+            locationManager.startUpdatingLocation()
+        }
+    }
+    
+    private func setupHardwarePipeline() {
+        bleReceiver.onDataReceived = { [weak self] rawBytes in
+            guard let self = self else { return }
+            
+            Task { @MainActor in
+                do {
+                    // Schaltet das Live-Decoding scharf und fügt Pakete in die Map-Pipeline ein
+                    let parsedStation = try ASN1Decoder.decodeV2X(from: rawBytes)
+                    let key = "\(parsedStation.stationID)"
+                    self.stations[key] = parsedStation
+                    
+                    if self.isTrackingUserLocation {
+                        self.triggerDynamicAutoZoom()
+                    }
+                } catch {
+                    self.logger.error("Decoder-Fehler: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    private func startLifecycleTimer() {
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor in
+                // Bereinigt tote Stationen nach 10 Sekunden Inaktivität
+                let now = Date()
+                self.stations = self.stations.filter { _, station in
+                    now.timeIntervalSince(station.lastUpdatedAt) < 10.0
+                }
+            }
+        }
+    }
+    
+    public func triggerDynamicAutoZoom() {
+        guard let userCoord = lastUserLocation?.coordinate else { return }
+        var targetMeters: CLLocationDistance = 350.0
         
-        // Falls bereits ein fixer letzter Standort bekannt ist, diesen sofort nutzen
-        if let lastLocation = locationManager.location?.coordinate {
-            self.mapRegion.center = lastLocation
+        if let closestStation = stations.values.first {
+            let userLoc = CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude)
+            let stationLoc = CLLocation(latitude: closestStation.coordinate.latitude, longitude: closestStation.coordinate.longitude)
+            let distance = userLoc.distance(from: stationLoc)
+            
+            if distance > 150 && distance < 2000 {
+                targetMeters = distance * 2.0
+            }
+        }
+        
+        let mapRegion = MKCoordinateRegion(
+            center: userCoord,
+            latitudinalMeters: targetMeters,
+            longitudinalMeters: targetMeters
+        )
+        
+        withAnimation(.easeInOut(duration: 0.4)) {
+            self.cameraPosition = .region(mapRegion)
         }
     }
     
-    public func requestLocationAccess() {
-        locationManager.requestWhenInUseAuthorization()
-        locationManager.startUpdatingLocation()
-    }
-    
-    public func updateStations(with newStations: [String: MapStation]) {
-        self.stations = newStations
-        if let selected = selectedStation, newStations[selected.id] == nil {
-            self.selectedStation = nil
-        }
-    }
-    
-    public func resetMapCenter() {
-        if let userLocation = locationManager.location?.coordinate {
-            self.mapRegion.center = userLocation
-            self.isTrackingUserLocation = true
-        } else {
-            self.mapRegion.center = AppConfig.Map.defaultCenter
-        }
-    }
-    
-    public func selectStation(_ station: MapStation) {
-        self.selectedStation = station
-    }
-    
-    public func clearSelection() {
-        self.selectedStation = nil
-    }
-    
-    // MARK: - CLLocationManagerDelegate
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last, isTrackingUserLocation else { return }
-        // Folgt dem echten GPS-Signal flüssig zur Laufzeit
-        withAnimation(.easeInOut) {
-            self.mapRegion.center = location.coordinate
+        guard let latestLocation = locations.last else { return }
+        self.lastUserLocation = latestLocation
+        if isTrackingUserLocation {
+            triggerDynamicAutoZoom()
         }
+    }
+    
+    public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        logger.error("GPS Ortungsfehler: \(error.localizedDescription)")
     }
 }

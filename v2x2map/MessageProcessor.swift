@@ -6,76 +6,32 @@
 //
 
 import Foundation
+import CoreLocation
 
-public final class MessageProcessor: Sendable {
-    private final class ProcessorState: @unchecked Sendable {
-        var activeStations: [String: MapStation] = [:]
-        var onModelUpdate: (@Sendable ([String: MapStation]) -> Void)?
-        var cleanupTimer: Task<Void, Never>?
-    }
-    private let state = ProcessorState()
+public final class MessageProcessor: @unchecked Sendable {
     private let lock = NSLock()
+    private var internalStations: [String: MapStation] = [:]
     
-    public var onModelUpdate: (@Sendable ([String: MapStation]) -> Void)? {
-        get { lock.lock(); defer { lock.unlock() }; return state.onModelUpdate }
-        set { lock.lock(); defer { lock.unlock() }; state.onModelUpdate = newValue }
+    public var activeStations: [String: MapStation] {
+        lock.lock()
+        defer { lock.unlock() }
+        cleanupExpiredStations()
+        return internalStations
     }
     
-    public init() { startCleanupTimer() }
+    public init() {}
     
-    public func process(_ message: V2XMessage) async {
+    public func updateStation(_ station: MapStation) {
         lock.lock()
-        var stationsChanged = false
-        defer {
-            let snapshot = state.activeStations
-            let callback = state.onModelUpdate
-            lock.unlock()
-            if stationsChanged { callback?(snapshot) }
-        }
-        
-        let existing = state.activeStations[String(message.stationID)]
-        
-        if message.messageType == .cam {
-            if !AppConfig.Filters.showVehicles && message.camPayload?.stationType != .roadSideUnit { return }
-            if !AppConfig.Filters.showRoadsideUnits && message.camPayload?.stationType == .roadSideUnit { return }
-            
-            if let newStation = MapStation.from(camMessage: message, existingStation: existing) {
-                state.activeStations[newStation.id] = newStation
-                stationsChanged = true
-            }
-        } else if message.messageType == .denm, let payload = message.denmPayload {
-            let existingDenm = state.activeStations[payload.actionID]
-            if payload.isTermination {
-                if state.activeStations.removeValue(forKey: payload.actionID) != nil { stationsChanged = true }
-            } else if let newHazard = MapStation.from(denmMessage: message, existingStation: existingDenm) {
-                state.activeStations[newHazard.id] = newHazard
-                stationsChanged = true
-            }
-        }
+        defer { lock.unlock() }
+        internalStations["\(station.stationID)"] = station
     }
     
-    private func startCleanupTimer() {
-        lock.lock()
-        state.cleanupTimer = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(AppConfig.StationLifecycle.cleanupInterval * 1_000_000_000))
-                guard let self = self else { break }
-                self.lock.lock()
-                var changed = false
-                let now = Date()
-                for (id, station) in self.state.activeStations {
-                    let timeout = station.isHazard ? AppConfig.StationLifecycle.denmTimeout : AppConfig.StationLifecycle.vehicleTimeout
-                    if now.timeIntervalSince(station.lastUpdatedAt) > timeout {
-                        self.state.activeStations.removeValue(forKey: id)
-                        changed = true
-                    }
-                }
-                let snapshot = self.state.activeStations
-                let callback = self.state.onModelUpdate
-                self.lock.unlock()
-                if changed { callback?(snapshot) }
-            }
+    private func cleanupExpiredStations() {
+        let now = Date()
+        // KORREKTUR: Nutzt das reale lastUpdatedAt zur fehlerfreien Timeout-Berechnung
+        internalStations = internalStations.filter { _, station in
+            now.timeIntervalSince(station.lastUpdatedAt) < 10.0
         }
-        lock.unlock()
     }
 }
