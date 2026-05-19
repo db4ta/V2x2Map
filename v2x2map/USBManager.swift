@@ -38,7 +38,6 @@ public final class USBManager: @unchecked Sendable {
     public init(usbReceiver: USBReceiver, bleReceiver: BLEReceiver) {
         self.usbReceiver = usbReceiver
         self.bleReceiver = bleReceiver
-        self.bleReceiver.onDataReceived = { [weak self] data in self?.logIncomingData(data, source: "BLE") }
     }
     
     @MainActor
@@ -74,7 +73,7 @@ public final class USBManager: @unchecked Sendable {
             logDebug("Bluetooth LE Scan gestartet. Suche ESP32 Peripheral...", type: .info)
             bleReceiver.startListening()
         } else {
-            bleReceiver.stopScan()
+            bleReceiver.stopListening()
             self.bleIsConnected = false
             logDebug("Bluetooth LE Funkverbindung manuell gestoppt.", type: .info)
         }
@@ -119,4 +118,3 @@ public final class USBManager: @unchecked Sendable {
         lock.unlock()
     }
 }
-
