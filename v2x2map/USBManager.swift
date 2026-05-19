@@ -23,30 +23,26 @@ public final class USBManager: @unchecked Sendable {
     
     public var bleIsConnected: Bool = false
     public var bleIsEnabled: Bool = false
-    
     public var isSimulationEnabled: Bool = false
     
     public private(set) var debugLog: [LogEntry] = []
     public private(set) var packetCount: UInt64 = 0
-    
-    // NEU: Veröffentlichter Zustand gefundener Geräte direkt im Hardware-Zustandshüter
     public var discoveredBLEDevices: [BLEDevice] = []
     
     public let usbReceiver: USBReceiver
     public let bleReceiver: BLEReceiver
     private let lock = NSLock()
-    private let maxLogLines = 50
+    private let maxLogLines = 60
     
     public init(usbReceiver: USBReceiver, bleReceiver: BLEReceiver) {
         self.usbReceiver = usbReceiver
         self.bleReceiver = bleReceiver
         
-        // KORREKTUR: Datenbrücke fängt nun die Live-Bytes vom transparenten C-ITS Modem ab
+        // Empfang gereinigter, vollständiger C-ITS Nachrichtenpakete
         self.bleReceiver.onDataReceived = { [weak self] data in
             self?.logIncomingData(data, source: "BLE")
         }
         
-        // KORREKTUR: Synchronisierung der Bluetooth-Ereignisse direkt mit dem DebugLog des Managers
         self.bleReceiver.onDevicesUpdated = { [weak self] devices in
             Task { @MainActor in self?.discoveredBLEDevices = devices }
         }
@@ -58,11 +54,7 @@ public final class USBManager: @unchecked Sendable {
         self.bleReceiver.onConnectionStateChanged = { [weak self] name in
             Task { @MainActor in
                 self?.bleIsConnected = (name != nil)
-                if let deviceName = name {
-                    self?.logDebug("Modem-Zustand: Verbunden mit \(deviceName)", type: .info)
-                } else {
-                    self?.logDebug("Modem-Zustand: Getrennt", type: .error)
-                }
+                if name == nil { self?.discoveredBLEDevices.removeAll() }
             }
         }
     }
@@ -104,7 +96,7 @@ public final class USBManager: @unchecked Sendable {
         lock.unlock()
         
         if enabled {
-            logDebug("Bluetooth LE Scan gestartet. Suche ESP32 Peripheral...", type: .info)
+            logDebug("Bluetooth LE Scan gestartet. Suche C-ITS Hardware...", type: .info)
             bleReceiver.startListening()
         } else {
             bleReceiver.stopListening()

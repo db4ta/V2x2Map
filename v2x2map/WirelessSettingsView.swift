@@ -17,9 +17,7 @@ struct WirelessSettingsView: View {
     @State private var scanInterval: Int = 5
     @State private var topNDevices: Int = 5
     @State private var isAutoReconnectEnabled: Bool = true
-    
-    // KORREKTUR: Standardwert des Textfeldes an den C-ITS Namen angepasst
-    @State private var nameFilter: String = "ITS-G5-RX"
+    @State private var nameFilter: String = ""
     
     var body: some View {
         Form {
@@ -32,7 +30,7 @@ struct WirelessSettingsView: View {
                         Task { await usbManager.toggleBleConnection(to: newValue) }
                     }
                 )) {
-                    Label("Automatischer Scan", systemImage: "play.radiowaves.left.and.right")
+                    Label("Automatischer Scan", systemImage: "antenna.radiowaves.left.and.right")
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
@@ -66,7 +64,7 @@ struct WirelessSettingsView: View {
                 HStack {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                         .foregroundColor(.gray)
-                    TextField("Namensfilter (z. B. ITS-G5-RX)", text: $nameFilter)
+                    TextField("Optionaler Namensfilter (z. B. ITS-G5-RX)", text: $nameFilter)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.characters)
                 }
@@ -91,7 +89,10 @@ struct WirelessSettingsView: View {
             Section(header: Text("📱 Gefundene C-ITS Modems (Sortiert nach RSSI)")) {
                 let discovered = usbManager.discoveredBLEDevices
                 let filtered = discovered.filter { device in
-                    nameFilter.isEmpty || device.name.localizedCaseInsensitiveContains(nameFilter)
+                    nameFilter.isEmpty ||
+                    device.name.localizedCaseInsensitiveContains(nameFilter) ||
+                    device.name.contains("V2X") ||
+                    device.name.contains("Unbekanntes")
                 }
                 let sortedAndLimited = Array(filtered.sorted(by: { $0.rssi > $1.rssi }).prefix(topNDevices))
                 
@@ -103,42 +104,14 @@ struct WirelessSettingsView: View {
                     HStack {
                         ProgressView()
                             .padding(.trailing, 8)
-                        Text("Scanne Hardware-Umfeld nach \(nameFilter)-Sendern...")
+                        Text("Scanne Hardware-Umfeld nach C-ITS Sendern...")
                             .foregroundColor(.secondary)
                     }
                 } else {
-                    ForEach(sortedAndLimited) { device in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(device.name)
-                                    .font(.headline)
-                                Text("UUID: \(device.id.uuidString.prefix(12))...")
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            
-                            if usbManager.bleIsConnected {
-                                Button("Trennen") {
-                                    Task { await usbManager.toggleBleConnection(to: false) }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.red)
-                            } else {
-                                Button("Koppeln") {
-                                    usbManager.bleReceiver.connectToDevice(device)
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(.green)
-                            }
-                            
-                            HStack(spacing: 2) {
-                                Image(systemName: "cellularbars")
-                                Text("\(device.rssi)dB")
-                                    .font(.caption2)
-                            }
-                            .foregroundColor(device.rssi > -75 ? .green : .orange)
-                            .frame(width: 55)
+                    // KORREKTUR: Auslagerung der Schleifen-Generierung bricht den @Bindable-Zwang auf und kompiliert fehlerfrei!
+                    List {
+                        ForEach(sortedAndLimited) { device in
+                            DeviceRowView(device: device, usbManager: usbManager)
                         }
                     }
                 }
@@ -152,7 +125,7 @@ struct WirelessSettingsView: View {
                     Text("Aktuelles Modem:")
                     Spacer()
                     if usbManager.bleIsConnected {
-                        Text("ITS-G5-RX V2X Modem")
+                        Text("C-ITS G5-Modem Aktiv")
                             .bold()
                             .foregroundColor(.green)
                     } else {
@@ -193,5 +166,47 @@ struct WirelessSettingsView: View {
             }
         }
         .navigationTitle("Drahtlos-Setup")
+    }
+}
+
+// MARK: - NEU: Isolierte Read-Only Subview zur Eliminierung jeglicher Compiler-Typkonflikte
+struct DeviceRowView: View {
+    let device: BLEDevice
+    let usbManager: USBManager
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(device.name)
+                    .font(.headline)
+                    .foregroundColor(device.name.contains("Unbekanntes") ? .orange : .primary)
+                Text("UUID: \(device.id.uuidString.prefix(14))...")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            
+            if usbManager.bleIsConnected {
+                Button("Trennen") {
+                    Task { await usbManager.toggleBleConnection(to: false) }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            } else {
+                Button("Koppeln") {
+                    usbManager.bleReceiver.connectToDevice(device)
+                }
+                .buttonStyle(.bordered)
+                .tint(.green)
+            }
+            
+            HStack(spacing: 2) {
+                Image(systemName: "cellularbars")
+                Text("\(device.rssi)dB")
+                    .font(.caption2)
+            }
+            .foregroundColor(device.rssi > -75 ? .green : .orange)
+            .frame(width: 55)
+        }
     }
 }
