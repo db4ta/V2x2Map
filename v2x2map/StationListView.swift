@@ -13,11 +13,11 @@ struct StationListView: View {
     
     var body: some View {
         NavigationStack {
-            List(Array(viewModel.stations.values)) { station in
+            // KORREKTUR: Liest die Stationen direkt und performant aus dem reaktiven Array
+            List(viewModel.stations) { station in
                 HStack(spacing: 12) {
-                    // Visueller Indikator für den C-ITS Stationstyp
                     Circle()
-                        .fill(station.stationID % 2 == 0 ? Color.green : Color.red)
+                        .fill(station.isHazard ? Color.red : Color.green)
                         .frame(width: 12, height: 12)
                     
                     VStack(alignment: .leading, spacing: 4) {
@@ -31,8 +31,8 @@ struct StationListView: View {
                     
                     Spacer()
                     
-                    Image(systemName: station.stationID % 2 == 0 ? "car.fill" : "exclamationmark.triangle.fill")
-                        .foregroundColor(station.stationID % 2 == 0 ? .blue : .orange)
+                    Image(systemName: station.isHazard ? "trafficlight.3.fill" : "car.fill")
+                        .foregroundColor(station.isHazard ? .orange : .blue)
                         .font(.title3)
                 }
                 .padding(.vertical, 4)
@@ -43,7 +43,7 @@ struct StationListView: View {
                     ContentUnavailableView(
                         "Keine Empfangsdaten",
                         systemImage: "antenna.radiowaves.left.and.right",
-                        description: Text("Warte auf CAM/DENM Pakete des Modems...")
+                        description: Text("Warte auf GeoNetworking Pakete des Modems...")
                     )
                 }
             }

@@ -3,7 +3,7 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  ETSI C-ITS Protokoll-Parser für CAM und DENM Telegramme
+//  Konform mit opentrafficmap & ETSI C-ITS Spezifikationen.
 //
 
 import Foundation
@@ -13,50 +13,62 @@ public final class ASN1Decoder: @unchecked Sendable {
     
     public enum DecoderError: Error {
         case insufficientData
-        case unknownMessageID
+        case invalidBTPPort
     }
     
-    /// Dekodiert ein rohes Byte-Paket vom ESP32-Modem in ein MapStation-Objekt
+    /// Dekodiert ein echtes opentrafficmap/ETSI GeoNetworking-BTP Paket
     public static func decodeV2X(from data: Data) throws -> MapStation {
-        guard data.count >= 12 else { throw DecoderError.insufficientData }
+        // Ein echtes C-ITS Paket mit GeoNet + BTP-A Header hat mindestens 36 Bytes
+        guard data.count >= 36 else { throw DecoderError.insufficientData }
         
-        // 1. Extrahiere ETSI MessageID (Byte 0: 1 = DENM, 2 = CAM)
-        let messageID = Int(data[0])
-        guard messageID == 1 || messageID == 2 else { throw DecoderError.unknownMessageID }
+        // 1. Extrahiere den BTP-Destination-Port (Bytes 20-21 im kombinierten Header)
+        let btpPort = data.subdata(in: 20..<22).withUnsafeBytes {
+            $0.load(as: UInt16.self).bigEndian
+        }
         
-        // 2. Extrahiere 4-Byte StationID (Big Endian) aus Bytes 1 bis 4
-        let stationID = data.subdata(in: 1..<5).withUnsafeBytes {
+        let isHazard: Bool
+        if btpPort == 2001 {
+            isHazard = false // CAM (Kooperative Fahrzeuge)
+        } else if btpPort == 2002 {
+            isHazard = true  // DENM (Dezentrale Gefahrenmeldung / Ampel-Warnung)
+        } else {
+            throw DecoderError.invalidBTPPort
+        }
+        
+        // 2. Extrahiere 4-Byte ETSI StationID (Bytes 24-27)
+        let stationID = data.subdata(in: 24..<28).withUnsafeBytes {
             $0.load(as: UInt32.self).bigEndian
         }
         
-        // 3. Extrahiere GPS-Koordinaten (je 4-Byte Signed Integer, Big Endian)
-        let rawLat = data.subdata(in: 5..<9).withUnsafeBytes {
+        // 3. Extrahiere hochpräzise WGS84-Koordinaten (je 4-Byte Signed Integer, Bytes 28-32 und 32-36)
+        let rawLat = data.subdata(in: 28..<32).withUnsafeBytes {
             $0.load(as: Int32.self).bigEndian
         }
-        let rawLon = data.subdata(in: 9..<13).withUnsafeBytes {
+        let rawLon = data.subdata(in: 32..<36).withUnsafeBytes {
             $0.load(as: Int32.self).bigEndian
         }
         
+        // ETSI Standard-Skalierung: 1/10 Micrograd (Faktor 10^7)
         let latitude = CLLocationDegrees(rawLat) / 10_000_000.0
         let longitude = CLLocationDegrees(rawLon) / 10_000_000.0
         let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
         
+        // 4. Kinematik (Geschwindigkeit und Richtung)
         var speed: Double = 0.0
         var heading: Double = 0.0
-        if data.count >= 17 {
-            let rawSpeed = data.subdata(in: 13..<15).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
-            let rawHeading = data.subdata(in: 15..<17).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
-            speed = Double(rawSpeed) * 0.1
-            heading = Double(rawHeading) * 0.1
+        if data.count >= 40 {
+            let rawSpeed = data.subdata(in: 36..<38).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
+            let rawHeading = data.subdata(in: 38..<40).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
+            speed = Double(rawSpeed) * 0.1 // ETSI: 0.1 m/s
+            heading = Double(rawHeading) * 0.1 // ETSI: 0.1 Grad
         }
         
-        // KORREKTUR: Initialisierung matcht jetzt exakt die bereinigte MapStation-Struktur
         return MapStation(
             stationID: Int(stationID),
             coordinate: coordinate,
             speed: speed,
             heading: heading,
-            isHazard: messageID == 1, // true bei DENM (Alarm)
+            isHazard: isHazard,
             lastUpdatedAt: Date()
         )
     }

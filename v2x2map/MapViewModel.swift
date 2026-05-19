@@ -16,17 +16,17 @@ import OSLog
 public final class MapViewModel: NSObject, CLLocationManagerDelegate {
     
     private let logger = Logger(subsystem: "com.v2x2map.app", category: "MapViewModel")
-    
     private let locationManager = CLLocationManager()
-    private let messageProcessor = MessageProcessor()
     
     public let bleReceiver = BLEReceiver()
     
-    // KORREKTUR: Verwendung deines originalen Stations-Dictionarys
-    public var stations: [String: MapStation] = [:]
+    // KORREKTUR: Umstellung auf ein reaktives Array. Das zwingt SwiftUI bei jeder
+    // Paket-Änderung zu einer sofortigen Neuzeichnung von Karte und Liste!
+    public var stations: [MapStation] = []
+    
     public var isTrackingUserLocation: Bool = true
     public var cameraPosition: MapKit.MapCameraPosition = .automatic
-    private var lastUserLocation: CLLocation?
+    public var lastUserLocation: CLLocation?
     
     public override init() {
         super.init()
@@ -51,18 +51,22 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
         bleReceiver.onDataReceived = { [weak self] rawBytes in
             guard let self = self else { return }
             
+            // Erzwinge die Verarbeitung direkt auf dem MainActor
             Task { @MainActor in
                 do {
-                    // Schaltet das Live-Decoding scharf und fügt Pakete in die Map-Pipeline ein
                     let parsedStation = try ASN1Decoder.decodeV2X(from: rawBytes)
-                    let key = "\(parsedStation.stationID)"
-                    self.stations[key] = parsedStation
+                    
+                    // Entferne ein älteres Paket derselben StationID, falls vorhanden
+                    self.stations.removeAll(where: { $0.stationID == parsedStation.stationID })
+                    
+                    // Füge das frische V2X-Objekt dem Array hinzu
+                    self.stations.append(parsedStation)
                     
                     if self.isTrackingUserLocation {
                         self.triggerDynamicAutoZoom()
                     }
                 } catch {
-                    self.logger.error("Decoder-Fehler: \(error.localizedDescription)")
+                    self.logger.error("C-ITS Decoder-Fehler: \(error.localizedDescription)")
                 }
             }
         }
@@ -72,11 +76,9 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
-                // Bereinigt tote Stationen nach 10 Sekunden Inaktivität
                 let now = Date()
-                self.stations = self.stations.filter { _, station in
-                    now.timeIntervalSince(station.lastUpdatedAt) < 10.0
-                }
+                // Timeout-Müllabfuhr: Löscht Stationen, die länger als 8 Sek. stumm sind
+                self.stations.removeAll(where: { now.timeIntervalSince($0.lastUpdatedAt) > 8.0 })
             }
         }
     }
@@ -85,13 +87,13 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
         guard let userCoord = lastUserLocation?.coordinate else { return }
         var targetMeters: CLLocationDistance = 350.0
         
-        if let closestStation = stations.values.first {
+        if let closestStation = stations.first {
             let userLoc = CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude)
             let stationLoc = CLLocation(latitude: closestStation.coordinate.latitude, longitude: closestStation.coordinate.longitude)
             let distance = userLoc.distance(from: stationLoc)
             
-            if distance > 150 && distance < 2000 {
-                targetMeters = distance * 2.0
+            if distance > 100 && distance < 1500 {
+                targetMeters = distance * 2.2
             }
         }
         
@@ -101,7 +103,7 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
             longitudinalMeters: targetMeters
         )
         
-        withAnimation(.easeInOut(duration: 0.4)) {
+        withAnimation(.easeInOut(duration: 0.3)) {
             self.cameraPosition = .region(mapRegion)
         }
     }
@@ -115,6 +117,6 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
     }
     
     public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        logger.error("GPS Ortungsfehler: \(error.localizedDescription)")
+        logger.error("GPS Fehler: \(error.localizedDescription)")
     }
 }

@@ -27,16 +27,15 @@ struct MainMapView: View {
         
         NavigationStack {
             ZStack {
-                // 1. KORREKTUR: Stabile Map-API ohne selection/tag eliminiert den Typenkonflikt vollständig
+                // 1. MapKit Live-Karte gekoppelt an dein reaktives Array
                 Map(position: $vm.cameraPosition) {
                     UserAnnotation()
                     
-                    // Rendert die aus den Bytes decodierten V2X-Stationen aus dem Dictionary
-                    ForEach(Array(viewModel.stations.values)) { station in
+                    // Direktes, stabiles Iterieren über das fehlerfreie Array
+                    ForEach(viewModel.stations) { station in
                         Annotation("Station \(station.stationID)", coordinate: station.coordinate) {
                             StationAnnotationView(station: station)
                                 .onTapGesture {
-                                    // Öffnet das Detail-Sheet sicher über die funktionale Tap-Geste
                                     selectedStation = station
                                 }
                         }
@@ -229,8 +228,10 @@ struct MainMapView: View {
     }
 }
 
+// MARK: - Hilfsansicht im globalen Scope platziert für fehlerfreie Kompilierung
 struct AppMenuHeaderView: View {
     @Binding var showSettings: Bool
+    
     var body: some View {
         HStack {
             Text("V2X Steuerzentrale")
@@ -244,6 +245,7 @@ struct AppMenuHeaderView: View {
             }
         }
         .padding(.top, 10)
+        
         Divider()
             .background(Color.cyan.opacity(0.3))
     }
