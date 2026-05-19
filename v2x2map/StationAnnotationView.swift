@@ -14,12 +14,11 @@ struct StationAnnotationView: View {
     @State private var pulseScale: CGFloat = 1.0
     @State private var pulseOpacity: Double = 0.6
     
-    // Nativer Deepsea-Farbwert (#0A0F1C)
     private let deepseaBackground = Color(red: 10/255, green: 15/255, blue: 28/255)
     
     var body: some View {
         ZStack {
-            // KORREKTUR: Nutzt dein reales 'isHazard' Property aus dem GitHub-Repository
+            // KORREKTUR: Nutzt dein reales 'isHazard' Property aus deiner originalen Modellstruktur
             if station.isHazard {
                 // --- DENM ALARM-ICON (Rot blinkendes Gefahren-Dreieck mit Puls-Effekt) ---
                 Circle()
@@ -38,7 +37,6 @@ struct StationAnnotationView: View {
                     .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.red)
                     .shadow(color: .red.opacity(0.8), radius: 6)
-                    // KORREKTUR: Extraneous hex: entfernt und durch native Color ersetzt
                     .background(Circle().fill(deepseaBackground).frame(width: 20, height: 20))
                 
             } else {
@@ -52,8 +50,8 @@ struct StationAnnotationView: View {
                     
                     Image(systemName: "location.north.fill")
                         .font(.system(size: 16, weight: .black))
-                        .foregroundColor(Color(red: 0.22, green: 1.0, blue: 0.08)) // Giftgrün
-                        .rotationEffect(.degrees(station.heading)) // Drehung exakt in Fahrtrichtung
+                        .foregroundColor(Color(red: 0.22, green: 1.0, blue: 0.08))
+                        .rotationEffect(.degrees(station.heading))
                         .shadow(color: Color(red: 0.22, green: 1.0, blue: 0.08).opacity(0.6), radius: 4)
                 }
             }

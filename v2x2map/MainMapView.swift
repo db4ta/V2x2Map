@@ -3,6 +3,7 @@
 //  v2x2map
 //
 //  Created for iOS 26.
+//  Vollständiges Haupt-Kartenfenster mit Live-Zentrierung, Einstellungs-Menü und Hex-Debug-Log.
 //
 
 import SwiftUI
@@ -10,6 +11,8 @@ import MapKit
 
 struct MainMapView: View {
     @Environment(MapViewModel.self) private var viewModel
+    
+    // Zentraler Hardware-Manager deiner Git-Architektur
     @State private var usbManager = USBManager(usbReceiver: USBReceiver(), bleReceiver: BLEReceiver())
     
     @State private var showSettings: Bool = false
@@ -24,16 +27,16 @@ struct MainMapView: View {
         
         NavigationStack {
             ZStack {
-                // 1. MapKit Live-Karte mit der stabilen, parameterlosen Inhalts-API
+                // 1. KORREKTUR: Stabile Map-API ohne selection/tag eliminiert den Typenkonflikt vollständig
                 Map(position: $vm.cameraPosition) {
                     UserAnnotation()
                     
-                    // Rendert die aus den Bytes decodierten V2X-Stationen
+                    // Rendert die aus den Bytes decodierten V2X-Stationen aus dem Dictionary
                     ForEach(Array(viewModel.stations.values)) { station in
                         Annotation("Station \(station.stationID)", coordinate: station.coordinate) {
                             StationAnnotationView(station: station)
                                 .onTapGesture {
-                                    // Öffnet das Detail-Sheet sicher über deine bestehende Tap-Logik
+                                    // Öffnet das Detail-Sheet sicher über die funktionale Tap-Geste
                                     selectedStation = station
                                 }
                         }
@@ -102,21 +105,7 @@ struct MainMapView: View {
                         HStack {
                             Spacer()
                             VStack(alignment: .leading, spacing: 16) {
-                                HStack {
-                                    Text("V2X Steuerzentrale")
-                                        .font(.headline)
-                                        .foregroundColor(.white)
-                                    Spacer()
-                                    Button(action: { withAnimation { showSettings = false } }) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundColor(.gray)
-                                            .font(.title3)
-                                    }
-                                }
-                                .padding(.top, 10)
-                                
-                                Divider()
-                                    .background(Color.cyan.opacity(0.3))
+                                AppMenuHeaderView(showSettings: $showSettings)
                                 
                                 ScrollView {
                                     VStack(spacing: 14) {
@@ -237,5 +226,25 @@ struct MainMapView: View {
                     .presentationDetents([.medium, .large])
             }
         }
+    }
+}
+
+struct AppMenuHeaderView: View {
+    @Binding var showSettings: Bool
+    var body: some View {
+        HStack {
+            Text("V2X Steuerzentrale")
+                .font(.headline)
+                .foregroundColor(.white)
+            Spacer()
+            Button(action: { withAnimation { showSettings = false } }) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.gray)
+                    .font(.title3)
+            }
+        }
+        .padding(.top, 10)
+        Divider()
+            .background(Color.cyan.opacity(0.3))
     }
 }
