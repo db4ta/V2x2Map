@@ -72,63 +72,62 @@ public final class USBManager: @unchecked Sendable {
     }
     
     private func startLabSimulation() {
-        logDebug("🕹️ Konformitäts-Simulator aktiv. Sende ETSI GeoNet-Frames...", type: .info)
-        
-        // KORREKTUR: Nutzt den echten, im Simulator aktiven Standort, um Anzeigefehler zu vermeiden
-        let locManager = CLLocationManager()
-        let currentCenterLat = locManager.location?.coordinate.latitude ?? 48.7758
-        let currentCenterLon = locManager.location?.coordinate.longitude ?? 9.1829
-        
-        // Initialisiere stochastische Start-Offsets im 1km-Radius um den Sichtbereich des iPhones
-        simVehicles = [
-            SimulatedCITSVehicle(stationID: 4422, btpPort: 2001, latOffset: Double.random(in: -300...300), lonOffset: Double.random(in: -300...300), speedMPS: 14.1, headingDeg: 90.0), // CAM Auto
-            SimulatedCITSVehicle(stationID: 8833, btpPort: 2002, latOffset: 150.0, lonOffset: 150.0, speedMPS: 0.0, headingDeg: 0.0) // DENM Ampel
-        ]
-        
-        simulationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
+            logDebug("🕹️ Konformitäts-Simulator aktiv. Sende ETSI GeoNet-Frames...", type: .info)
             
-            let metersPerDegreeLat = 111132.92
-            let metersPerDegreeLon = 111319.49 * cos(currentCenterLat * .pi / 180.0)
+            let locManager = CLLocationManager()
+            let currentCenterLat = locManager.location?.coordinate.latitude ?? 48.7758
+            let currentCenterLon = locManager.location?.coordinate.longitude ?? 9.1829
             
-            for i in 0..<self.simVehicles.count {
-                var vehicle = self.simVehicles[i]
+            // Port 2001 = CAM (Fahrzeug), Port 2002 = DENM/SPAT (Ampelanlage)
+            simVehicles = [
+                SimulatedCITSVehicle(stationID: 4422, btpPort: 2001, latOffset: Double.random(in: -250...250), lonOffset: Double.random(in: -250...250), speedMPS: 13.8, headingDeg: 90.0),
+                SimulatedCITSVehicle(stationID: 8833, btpPort: 2002, latOffset: 120.0, lonOffset: -120.0, speedMPS: 0.0, headingDeg: 0.0)
+            ]
+            
+            simulationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
                 
-                if vehicle.speedMPS > 0 {
-                    vehicle.lonOffset += vehicle.speedMPS
-                    if abs(vehicle.lonOffset) > 800 { vehicle.lonOffset = -800 } // Begrenzung auf Sichtbereich
-                    self.simVehicles[i] = vehicle
+                let metersPerDegreeLat = 111132.92
+                let metersPerDegreeLon = 111319.49 * cos(currentCenterLat * .pi / 180.0)
+                
+                for i in 0..<self.simVehicles.count {
+                    var vehicle = self.simVehicles[i]
+                    if vehicle.speedMPS > 0 {
+                        vehicle.lonOffset += vehicle.speedMPS
+                        if abs(vehicle.lonOffset) > 800 { vehicle.lonOffset = -800 }
+                        self.simVehicles[i] = vehicle
+                    }
+                    
+                    let finalLat = currentCenterLat + (vehicle.latOffset / metersPerDegreeLat)
+                    let finalLon = currentCenterLon + (vehicle.lonOffset / metersPerDegreeLon)
+                    
+                    // Aufbau des exakten opentrafficmap GeoNetworking-Datenpakets
+                    var frame = Data()
+                    frame.append(Data(repeating: 0x00, count: 20)) // GeoNet Header (20 Bytes)
+                    var portBytes = vehicle.btpPort.bigEndian
+                    frame.append(Data(bytes: &portBytes, count: 2)) // BTP Port (2 Bytes)
+                    frame.append(Data(repeating: 0x00, count: 2)) // Extended Header
+                    
+                    var vID = vehicle.stationID.bigEndian
+                    frame.append(Data(bytes: &vID, count: 4)) // StationID (4 Bytes)
+                    
+                    var latBytes = Int32(finalLat * 10_000_000.0).bigEndian
+                    frame.append(Data(bytes: &latBytes, count: 4)) // Lat (* 10^7)
+                    var lonBytes = Int32(finalLon * 10_000_000.0).bigEndian
+                    frame.append(Data(bytes: &lonBytes, count: 4)) // Lon (* 10^7)
+                    
+                    var speedBytes = UInt16(vehicle.speedMPS * 10.0).bigEndian
+                    frame.append(Data(bytes: &speedBytes, count: 2))
+                    var headingBytes = UInt16(vehicle.headingDeg * 10.0).bigEndian
+                    frame.append(Data(bytes: &headingBytes, count: 2))
+                    
+                    let tlvPacket = self.wrapInTLV(payload: frame)
+                    
+                    // Triggert das globale Callback im MainViewModel fehlerfrei!
+                    self.bleReceiver.onDataReceived?(tlvPacket)
                 }
-                
-                let finalLat = currentCenterLat + (vehicle.latOffset / metersPerDegreeLat)
-                let finalLon = currentCenterLon + (vehicle.lonOffset / metersPerDegreeLon)
-                
-                // Formation eines echten opentrafficmap BTP-A Frames
-                var frame = Data()
-                frame.append(Data(repeating: 0x00, count: 20)) // GeoNet Header
-                
-                var portBytes = vehicle.btpPort.bigEndian
-                frame.append(Data(bytes: &portBytes, count: 2)) // BTP Port
-                frame.append(Data(repeating: 0x00, count: 2)) // Extended Header
-                
-                var vID = vehicle.stationID.bigEndian
-                frame.append(Data(bytes: &vID, count: 4)) // StationID
-                
-                var latBytes = Int32(finalLat * 10_000_000.0).bigEndian
-                frame.append(Data(bytes: &latBytes, count: 4))
-                var lonBytes = Int32(finalLon * 10_000_000.0).bigEndian
-                frame.append(Data(bytes: &lonBytes, count: 4))
-                
-                var speedBytes = UInt16(vehicle.speedMPS * 10.0).bigEndian
-                frame.append(Data(bytes: &speedBytes, count: 2))
-                var headingBytes = UInt16(vehicle.headingDeg * 10.0).bigEndian
-                frame.append(Data(bytes: &headingBytes, count: 2))
-                
-                let tlvPacket = self.wrapInTLV(payload: frame)
-                self.bleReceiver.onDataReceived?(tlvPacket)
             }
         }
-    }
     
     private func stopLabSimulation() {
         simulationTimer?.invalidate()

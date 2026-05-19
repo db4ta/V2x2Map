@@ -1,10 +1,3 @@
-//
-//  MapViewModel.swift
-//  v2x2map
-//
-//  Created for iOS 26.
-//
-
 import SwiftUI
 import MapKit
 import CoreLocation
@@ -14,22 +7,26 @@ import OSLog
 @Observable
 @MainActor
 public final class MapViewModel: NSObject, CLLocationManagerDelegate {
-    
     private let logger = Logger(subsystem: "com.v2x2map.app", category: "MapViewModel")
     private let locationManager = CLLocationManager()
     
+    // Core-Logik deines Repositories
+    public let messageProcessor = MessageProcessor()
     public let bleReceiver = BLEReceiver()
+    public let usbReceiver = USBReceiver()
     
-    // KORREKTUR: Umstellung auf ein reaktives Array. Das zwingt SwiftUI bei jeder
-    // Paket-Änderung zu einer sofortigen Neuzeichnung von Karte und Liste!
+    // Der zentrale Hardware-Hüter
+    public var usbManager: USBManager!
+    
+    // Reaktives Array für die Karte und die Listen
     public var stations: [MapStation] = []
-    
     public var isTrackingUserLocation: Bool = true
     public var cameraPosition: MapKit.MapCameraPosition = .automatic
-    public var lastUserLocation: CLLocation?
+    private var lastUserLocation: CLLocation?
     
     public override init() {
         super.init()
+        self.usbManager = USBManager(usbReceiver: usbReceiver, bleReceiver: bleReceiver)
         setupLocationManager()
         setupHardwarePipeline()
         startLifecycleTimer()
@@ -39,34 +36,33 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.distanceFilter = 1.0
-        
         if locationManager.authorizationStatus == .notDetermined {
             locationManager.requestAlwaysAuthorization()
-        } else if locationManager.authorizationStatus == .authorizedAlways || locationManager.authorizationStatus == .authorizedWhenInUse {
+        } else if [.authorizedAlways, .authorizedWhenInUse].contains(locationManager.authorizationStatus) {
             locationManager.startUpdatingLocation()
         }
     }
     
     private func setupHardwarePipeline() {
+        // Verbindet die Hardware-Bytes lückenlos mit dem ASN1Decoder und dem MessageProcessor
         bleReceiver.onDataReceived = { [weak self] rawBytes in
             guard let self = self else { return }
-            
-            // Erzwinge die Verarbeitung direkt auf dem MainActor
             Task { @MainActor in
                 do {
                     let parsedStation = try ASN1Decoder.decodeV2X(from: rawBytes)
                     
-                    // Entferne ein älteres Paket derselben StationID, falls vorhanden
-                    self.stations.removeAll(where: { $0.stationID == parsedStation.stationID })
+                    // 1. Aktualisiere deinen originalen MessageProcessor
+                    self.messageProcessor.updateStation(parsedStation)
                     
-                    // Füge das frische V2X-Objekt dem Array hinzu
+                    // 2. Synchronisiere das reaktive UI-Array
+                    self.stations.removeAll(where: { $0.stationID == parsedStation.stationID })
                     self.stations.append(parsedStation)
                     
                     if self.isTrackingUserLocation {
                         self.triggerDynamicAutoZoom()
                     }
                 } catch {
-                    self.logger.error("C-ITS Decoder-Fehler: \(error.localizedDescription)")
+                    self.logger.error("C-ITS Parsing-Fehler: \(error.localizedDescription)")
                 }
             }
         }
@@ -76,33 +72,24 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
-                let now = Date()
-                // Timeout-Müllabfuhr: Löscht Stationen, die länger als 8 Sek. stumm sind
-                self.stations.removeAll(where: { now.timeIntervalSince($0.lastUpdatedAt) > 8.0 })
+                // Abgleich mit der Müllabfuhr deines MessageProcessors
+                let active = self.messageProcessor.activeStations
+                self.stations = Array(active.values)
             }
         }
     }
     
     public func triggerDynamicAutoZoom() {
         guard let userCoord = lastUserLocation?.coordinate else { return }
-        var targetMeters: CLLocationDistance = 350.0
+        var targetMeters: CLLocationDistance = 400.0
         
         if let closestStation = stations.first {
             let userLoc = CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude)
             let stationLoc = CLLocation(latitude: closestStation.coordinate.latitude, longitude: closestStation.coordinate.longitude)
-            let distance = userLoc.distance(from: stationLoc)
-            
-            if distance > 100 && distance < 1500 {
-                targetMeters = distance * 2.2
-            }
+            targetMeters = max(400.0, userLoc.distance(from: stationLoc) * 2.2)
         }
         
-        let mapRegion = MKCoordinateRegion(
-            center: userCoord,
-            latitudinalMeters: targetMeters,
-            longitudinalMeters: targetMeters
-        )
-        
+        let mapRegion = MKCoordinateRegion(center: userCoord, latitudinalMeters: targetMeters, longitudinalMeters: targetMeters)
         withAnimation(.easeInOut(duration: 0.3)) {
             self.cameraPosition = .region(mapRegion)
         }
@@ -111,9 +98,7 @@ public final class MapViewModel: NSObject, CLLocationManagerDelegate {
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let latestLocation = locations.last else { return }
         self.lastUserLocation = latestLocation
-        if isTrackingUserLocation {
-            triggerDynamicAutoZoom()
-        }
+        if isTrackingUserLocation { triggerDynamicAutoZoom() }
     }
     
     public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

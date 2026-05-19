@@ -12,9 +12,6 @@ import MapKit
 struct MainMapView: View {
     @Environment(MapViewModel.self) private var viewModel
     
-    // Zentraler Hardware-Manager deiner Git-Architektur
-    @State private var usbManager = USBManager(usbReceiver: USBReceiver(), bleReceiver: BLEReceiver())
-    
     @State private var showSettings: Bool = false
     @State private var showStationList: Bool = false
     @State private var selectedStation: MapStation? = nil
@@ -23,7 +20,8 @@ struct MainMapView: View {
     
     var body: some View {
         @Bindable var vm = viewModel
-        @Bindable var um = usbManager
+        // Gekoppelt an das im globalen Scope gehaltene Manager-Objekt deines ViewModels
+        @Bindable var um = viewModel.usbManager
         
         NavigationStack {
             ZStack {
@@ -62,10 +60,8 @@ struct MainMapView: View {
                                     .padding()
                                     .background(Color.blue)
                                     .clipShape(Circle())
-                                    .shadow(radius: 4)
                             }
                             .padding(.leading, 16)
-                            .transition(.move(edge: .leading).combined(with: .opacity))
                         }
                         
                         Spacer()
@@ -104,28 +100,43 @@ struct MainMapView: View {
                         HStack {
                             Spacer()
                             VStack(alignment: .leading, spacing: 16) {
-                                AppMenuHeaderView(showSettings: $showSettings)
+                                // KORREKTUR: Flacher SwiftUI-Header ersetzt die fehlende 'AppMenuHeaderView' direkt im Scope
+                                HStack {
+                                    Text("V2X Steuerzentrale")
+                                        .font(.headline)
+                                        .foregroundColor(.white)
+                                    Spacer()
+                                    Button(action: { withAnimation { showSettings = false } }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundColor(.gray)
+                                            .font(.title3)
+                                    }
+                                }
+                                .padding(.top, 10)
+                                
+                                Divider()
+                                    .background(Color.cyan.opacity(0.3))
                                 
                                 ScrollView {
                                     VStack(spacing: 14) {
                                         Toggle(isOn: Binding(
-                                            get: { usbManager.usbIsEnabled },
-                                            set: { newValue in Task { await usbManager.toggleUsbConnection(to: newValue) } }
+                                            get: { viewModel.usbManager.usbIsEnabled },
+                                            set: { newValue in Task { await viewModel.usbManager.toggleUsbConnection(to: newValue) } }
                                         )) {
                                             Label("USB-Modem (Kabel)", systemImage: "cable.connector")
                                                 .foregroundColor(.white)
                                         }
                                         .tint(.green)
                                         
-                                        NavigationLink(destination: WirelessSettingsView(usbManager: usbManager)) {
+                                        NavigationLink(destination: WirelessSettingsView(usbManager: viewModel.usbManager)) {
                                             HStack {
                                                 Label("Drahtlos-Setup (BLE)", systemImage: "wifi")
                                                     .foregroundColor(.white)
                                                 Spacer()
                                                 HStack(spacing: 4) {
-                                                    Text(usbManager.bleIsConnected ? "Verbunden" : "Konfigurieren")
+                                                    Text(viewModel.usbManager.bleIsConnected ? "Verbunden" : "Konfigurieren")
                                                         .font(.caption)
-                                                        .foregroundColor(usbManager.bleIsConnected ? .green : .gray)
+                                                        .foregroundColor(viewModel.usbManager.bleIsConnected ? .green : .gray)
                                                     Image(systemName: "chevron.right")
                                                         .font(.caption2)
                                                         .foregroundColor(.gray)
@@ -163,7 +174,7 @@ struct MainMapView: View {
                                             .bold()
                                             .foregroundColor(.cyan)
                                         Spacer()
-                                        Button("Clear") { usbManager.clearLog() }
+                                        Button("Clear") { viewModel.usbManager.clearLog() }
                                             .font(.caption2)
                                             .foregroundColor(.gray)
                                     }
@@ -191,7 +202,7 @@ struct MainMapView: View {
                                     }
                                 }
                                 
-                                Button(action: { usbManager.runHardwarePingTest() }) {
+                                Button(action: { viewModel.usbManager.runHardwarePingTest() }) {
                                     HStack {
                                         Spacer()
                                         Image(systemName: "gauge.with.needle")
@@ -225,28 +236,5 @@ struct MainMapView: View {
                     .presentationDetents([.medium, .large])
             }
         }
-    }
-}
-
-// MARK: - Hilfsansicht im globalen Scope platziert für fehlerfreie Kompilierung
-struct AppMenuHeaderView: View {
-    @Binding var showSettings: Bool
-    
-    var body: some View {
-        HStack {
-            Text("V2X Steuerzentrale")
-                .font(.headline)
-                .foregroundColor(.white)
-            Spacer()
-            Button(action: { withAnimation { showSettings = false } }) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.gray)
-                    .font(.title3)
-            }
-        }
-        .padding(.top, 10)
-        
-        Divider()
-            .background(Color.cyan.opacity(0.3))
     }
 }
