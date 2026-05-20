@@ -120,6 +120,9 @@ struct v2x2mapApp: App {
                 }
             }
             .task {
+                // Startet die Hintergrundsuche nach Hardware parallel während der Splash-Animation
+                viewModel.initiateBluetoothSubsystem()
+                
                 // 1. Sanftes Einblenden des Logos
                 withAnimation(.easeIn(duration: 0.6)) {
                     splashOpacity = 1.0

@@ -1,107 +1,126 @@
-import SwiftUI
-import MapKit
-import CoreLocation
+//
+//  MapViewModel.swift
+//  v2x2map
+//
+//  Created for iOS 26.
+//  Zentraler Observable-Datenverteiler für C-ITS Telemetrie, Simulator- und Parameter-Updates.
+//
+
 import Foundation
-import OSLog
+import CoreLocation
+import Observation
+
+@preconcurrency import MapKit
+@preconcurrency import SwiftUI
 
 @Observable
-@MainActor
-public final class MapViewModel: NSObject, CLLocationManagerDelegate {
-    private let logger = Logger(subsystem: "com.v2x2map.app", category: "MapViewModel")
-    private let locationManager = CLLocationManager()
+final class MapViewModel: BLEManagerDelegate {
+    // UI-relevante Zustände für Kartendarstellung
+    var isConnected: Bool = false
+    var citsNodes: [UInt32: CITSNode] = [:]
+    var mapPosition: MapKit.MapCameraPosition = .automatic
     
-    // Core-Logik deines Repositories
-    public let messageProcessor = MessageProcessor()
-    public let bleReceiver = BLEReceiver()
-    public let usbReceiver = USBReceiver()
+    // Globale Parameter gekoppelt an deine Einstellungsmenüs
+    var isDebugModeEnabled: Bool = false
+    var selectedMapStyle: Int = 0       // 0: Standard, 1: Satellit, 2: Hybrid
+    var showTrafficOnMap: Bool = true
     
-    // Der zentrale Hardware-Hüter
-    public var usbManager: USBManager!
+    // Rollierendes Log-Register für das Debug-Terminal
+    var debugLogs: [String] = []        // Hält die letzten 100 Datenstrom-Meldungen im RAM
     
-    // Reaktives Array für die Karte und die Listen
-    public var stations: [MapStation] = []
-    public var isTrackingUserLocation: Bool = true
-    public var cameraPosition: MapKit.MapCameraPosition = .automatic
-    private var lastUserLocation: CLLocation?
-    
-    public override init() {
-        super.init()
-        self.usbManager = USBManager(usbReceiver: usbReceiver, bleReceiver: bleReceiver)
-        setupLocationManager()
-        setupHardwarePipeline()
-        startLifecycleTimer()
-    }
-    
-    private func setupLocationManager() {
-        locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = 1.0
-        if locationManager.authorizationStatus == .notDetermined {
-            locationManager.requestAlwaysAuthorization()
-        } else if [.authorizedAlways, .authorizedWhenInUse].contains(locationManager.authorizationStatus) {
-            locationManager.startUpdatingLocation()
+    var isSimulatorEnabled: Bool = false {
+        didSet {
+            if isSimulatorEnabled { startSimulation() } else { stopSimulation() }
         }
     }
     
-    private func setupHardwarePipeline() {
-        // Verbindet die Hardware-Bytes lückenlos mit dem ASN1Decoder und dem MessageProcessor
-        bleReceiver.onDataReceived = { [weak self] rawBytes in
-            guard let self = self else { return }
-            Task { @MainActor in
-                do {
-                    let parsedStation = try ASN1Decoder.decodeV2X(from: rawBytes)
-                    
-                    // 1. Aktualisiere deinen originalen MessageProcessor
-                    self.messageProcessor.updateStation(parsedStation)
-                    
-                    // 2. Synchronisiere das reaktive UI-Array
-                    self.stations.removeAll(where: { $0.stationID == parsedStation.stationID })
-                    self.stations.append(parsedStation)
-                    
-                    if self.isTrackingUserLocation {
-                        self.triggerDynamicAutoZoom()
-                    }
-                } catch {
-                    self.logger.error("C-ITS Parsing-Fehler: \(error.localizedDescription)")
-                }
+    private let bleManager = BLEManager()
+    private var simulationTimer: Timer?
+    
+    init() {
+        bleManager.delegate = self
+    }
+    
+    func initiateBluetoothSubsystem() {
+        bleManager.startScanning()
+    }
+    
+    func triggerManualScan() {
+        bleManager.startScanning()
+    }
+    
+    // MARK: - BLEManagerDelegate
+    func bleManager(_ manager: BLEManager, didUpdateConnectionStatus connected: Bool) {
+        Task { @MainActor in
+            self.isConnected = connected
+        }
+    }
+    
+    func bleManager(_ manager: BLEManager, didLogDebugMessage message: String) {
+        Task { @MainActor in
+            let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+            self.debugLogs.insert("[\(timestamp)] \(message)", at: 0)
+            if self.debugLogs.count > 100 { self.debugLogs.removeLast() }
+        }
+    }
+    
+    func bleManager(_ manager: BLEManager, didAssembleCITSFrame frame: Data) {
+        guard frame.count >= 15 else { return }
+        
+        let type = Int(frame[0])
+        let stationID = frame.subdata(in: 1..<5).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let latRaw = frame.subdata(in: 5..<9).withUnsafeBytes { $0.load(as: Int32.self).bigEndian }
+        let lonRaw = frame.subdata(in: 9..<13).withUnsafeBytes { $0.load(as: Int32.self).bigEndian }
+        let speedRaw = frame.subdata(in: 13..<15).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
+        
+        let latitude = Double(latRaw) / 10000000.0
+        let longitude = Double(lonRaw) / 10000000.0
+        let speedKmH = (Double(speedRaw) * 0.01) * 3.6
+        
+        processIncomingNode(id: stationID, lat: latitude, lon: longitude, speed: speedKmH, type: type)
+    }
+    
+    private func processIncomingNode(id: UInt32, lat: Double, lon: Double, speed: Double, type: Int) {
+        let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        let updatedNode = CITSNode(id: id, coordinate: coordinate, speedKmH: speed, timestamp: Date(), stationType: type)
+        
+        Task { @MainActor in
+            self.citsNodes[id] = updatedNode
+            
+            SwiftUI.withAnimation(SwiftUI.Animation.easeInOut(duration: 0.2)) {
+                let region = MapKit.MKCoordinateRegion(
+                    center: coordinate,
+                    span: MapKit.MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
+                )
+                self.mapPosition = MapKit.MapCameraPosition.region(region)
             }
         }
     }
     
-    private func startLifecycleTimer() {
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+    // MARK: - V2X-Simulator nach pit711-Vorbild
+    private func startSimulation() {
+        stopSimulation()
+        isConnected = true
+        var baseLat = 52.520008
+        var baseLon = 13.404954
+        
+        simulationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            Task { @MainActor in
-                // Abgleich mit der Müllabfuhr deines MessageProcessors
-                let active = self.messageProcessor.activeStations
-                self.stations = Array(active.values)
-            }
+            baseLat += Double.random(in: -0.0002...0.0002)
+            baseLon += Double.random(in: -0.0002...0.0002)
+            let speed = Double.random(in: 25.0...65.0)
+            
+            self.bleManager(self.bleManager, didLogDebugMessage: "SIM-OUT: CAM-Frame generiert für RSU-ID 0x000F41A2")
+            self.processIncomingNode(id: 0x000F41A2, lat: baseLat, lon: baseLon, speed: speed, type: 1)
         }
     }
     
-    public func triggerDynamicAutoZoom() {
-        guard let userCoord = lastUserLocation?.coordinate else { return }
-        var targetMeters: CLLocationDistance = 400.0
-        
-        if let closestStation = stations.first {
-            let userLoc = CLLocation(latitude: userCoord.latitude, longitude: userCoord.longitude)
-            let stationLoc = CLLocation(latitude: closestStation.coordinate.latitude, longitude: closestStation.coordinate.longitude)
-            targetMeters = max(400.0, userLoc.distance(from: stationLoc) * 2.2)
+    private func stopSimulation() {
+        simulationTimer?.invalidate()
+        simulationTimer = nil
+        if !isSimulatorEnabled {
+            citsNodes.removeAll()
+            isConnected = false
         }
-        
-        let mapRegion = MKCoordinateRegion(center: userCoord, latitudinalMeters: targetMeters, longitudinalMeters: targetMeters)
-        withAnimation(.easeInOut(duration: 0.3)) {
-            self.cameraPosition = .region(mapRegion)
-        }
-    }
-    
-    public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let latestLocation = locations.last else { return }
-        self.lastUserLocation = latestLocation
-        if isTrackingUserLocation { triggerDynamicAutoZoom() }
-    }
-    
-    public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        logger.error("GPS Fehler: \(error.localizedDescription)")
     }
 }
