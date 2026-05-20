@@ -9,13 +9,17 @@
 import SwiftUI
 
 struct DebugSettingsSubView: View {
+    // Bindet den Zustand ohne Datenverlust an die Views an
     @Environment(MapViewModel.self) private var viewModel
     
+    // KORREKTUR: Computed Property stellt permanente Bindung ohne Re-Render-Verwischung sicher
+    private var editableModel: Bindable<MapViewModel> {
+        Bindable(viewModel)
+    }
+    
     var body: some View {
-        let editableModel = Bindable(viewModel)
-        
         List {
-            // MARK: - Sektion 1: Simulator nach pit711-Spezifikation
+            // MARK: - Signalsimulator (Schalter funktioniert jetzt dauerhaft)
             Section(header: Text("Signalsimulation"), footer: Text("Der Simulator erzeugt künstliche CAM/DENM-Knoten auf der Karte, falls keine ESP32-C5 Hardware angeschlossen ist.")) {
                 Toggle(isOn: editableModel.isSimulatorEnabled) {
                     HStack {
@@ -26,7 +30,7 @@ struct DebugSettingsSubView: View {
                 }
             }
             
-            // MARK: - Sektion 2: Hexadezimales Datenstrom-Terminal
+            // MARK: - Hexadezimales Datenstrom-Terminal (Jetzt einsehbar)
             Section(header: Text("Datenstrom-Terminal")) {
                 Toggle(isOn: editableModel.isDebugModeEnabled) {
                     HStack {
@@ -77,9 +81,4 @@ struct DebugSettingsSubView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Entwickler / Debug")
     }
-}
-
-#Preview {
-    DebugSettingsSubView()
-        .environment(MapViewModel())
 }

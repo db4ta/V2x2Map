@@ -9,11 +9,11 @@
 import Foundation
 import CoreLocation
 import Observation
-
-@preconcurrency import MapKit
-@preconcurrency import SwiftUI
+import MapKit
+import SwiftUI
 
 @Observable
+@MainActor
 final class MapViewModel: BLEManagerDelegate {
     // UI-relevante Zustände für Kartendarstellung
     var isConnected: Bool = false
@@ -25,8 +25,8 @@ final class MapViewModel: BLEManagerDelegate {
     var selectedMapStyle: Int = 0       // 0: Standard, 1: Satellit, 2: Hybrid
     var showTrafficOnMap: Bool = true
     
-    // Rollierendes Log-Register für das Debug-Terminal
-    var debugLogs: [String] = []        // Hält die letzten 100 Datenstrom-Meldungen im RAM
+    // Live-Register für das Debug-Terminal
+    var debugLogs: [String] = []
     
     var isSimulatorEnabled: Bool = false {
         didSet {
@@ -51,17 +51,12 @@ final class MapViewModel: BLEManagerDelegate {
     
     // MARK: - BLEManagerDelegate
     func bleManager(_ manager: BLEManager, didUpdateConnectionStatus connected: Bool) {
-        Task { @MainActor in
-            self.isConnected = connected
-        }
+        self.isConnected = connected
+        logMessage(connected ? "GATT-Server erfolgreich gekoppelt." : "Verbindung zum GATT-Server getrennt.")
     }
     
     func bleManager(_ manager: BLEManager, didLogDebugMessage message: String) {
-        Task { @MainActor in
-            let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-            self.debugLogs.insert("[\(timestamp)] \(message)", at: 0)
-            if self.debugLogs.count > 100 { self.debugLogs.removeLast() }
-        }
+        logMessage(message)
     }
     
     func bleManager(_ manager: BLEManager, didAssembleCITSFrame frame: Data) {
@@ -80,24 +75,27 @@ final class MapViewModel: BLEManagerDelegate {
         processIncomingNode(id: stationID, lat: latitude, lon: longitude, speed: speedKmH, type: type)
     }
     
+    private func logMessage(_ message: String) {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        self.debugLogs.insert("[\(timestamp)] \(message)", at: 0)
+        if self.debugLogs.count > 100 { self.debugLogs.removeLast() }
+    }
+    
     private func processIncomingNode(id: UInt32, lat: Double, lon: Double, speed: Double, type: Int) {
         let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
         let updatedNode = CITSNode(id: id, coordinate: coordinate, speedKmH: speed, timestamp: Date(), stationType: type)
         
-        Task { @MainActor in
-            self.citsNodes[id] = updatedNode
-            
-            SwiftUI.withAnimation(SwiftUI.Animation.easeInOut(duration: 0.2)) {
-                let region = MapKit.MKCoordinateRegion(
-                    center: coordinate,
-                    span: MapKit.MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
-                )
-                self.mapPosition = MapKit.MapCameraPosition.region(region)
-            }
+        self.citsNodes[id] = updatedNode
+        
+        SwiftUI.withAnimation(.easeInOut(duration: 0.2)) {
+            let region = MapKit.MKCoordinateRegion(
+                center: coordinate,
+                span: MapKit.MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
+            )
+            self.mapPosition = MapKit.MapCameraPosition.region(region)
         }
     }
     
-    // MARK: - V2X-Simulator nach pit711-Vorbild
     private func startSimulation() {
         stopSimulation()
         isConnected = true
@@ -106,12 +104,14 @@ final class MapViewModel: BLEManagerDelegate {
         
         simulationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            baseLat += Double.random(in: -0.0002...0.0002)
-            baseLon += Double.random(in: -0.0002...0.0002)
-            let speed = Double.random(in: 25.0...65.0)
-            
-            self.bleManager(self.bleManager, didLogDebugMessage: "SIM-OUT: CAM-Frame generiert für RSU-ID 0x000F41A2")
-            self.processIncomingNode(id: 0x000F41A2, lat: baseLat, lon: baseLon, speed: speed, type: 1)
+            Task { @MainActor in
+                baseLat += Double.random(in: -0.0002...0.0002)
+                baseLon += Double.random(in: -0.0002...0.0002)
+                let speed = Double.random(in: 25.0...65.0)
+                
+                self.logMessage("SIM-OUT: CAM-Frame generiert für RSU-ID 0x000F41A2")
+                self.processIncomingNode(id: 0x000F41A2, lat: baseLat, lon: baseLon, speed: speed, type: 1)
+            }
         }
     }
     
