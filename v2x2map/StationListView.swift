@@ -71,9 +71,10 @@ struct StationListView: View {
                             // Rechte Status- und Geschwindigkeitsanzeige
                             if node.stationType != 2 {
                                 VStack(alignment: .trailing, spacing: 4) {
-                                    Text("\(String(format: "%.1f", node.speedKmH)) km/h")
+                                    Text(String(format: "%.1f", node.speedKmH))
                                         .font(.system(.title3, design: .rounded))
                                         .bold()
+                                        + Text(" km/h").font(.footnote).foregroundColor(.secondary)
                                     
                                     Text("Live")
                                         .font(.system(size: 9, weight: .bold))
