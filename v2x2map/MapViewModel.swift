@@ -31,6 +31,20 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     var showTrafficOnMap: Bool = true
     var debugLogs: [String] = []
     
+    // Einstellbares Inaktivitäts-Timeout für den Verbindungs-Watchdog
+    var bleConnectionTimeout: Double = 5.0 {
+        didSet {
+            bleManager.setConnectionTimeout(bleConnectionTimeout)
+        }
+    }
+    
+    // Deaktiviert den Auto-Lock / Ruhezustand des iPhones für den Live-Betrieb
+    var isDisplayAlwaysOn: Bool = false {
+        didSet {
+            UIApplication.shared.isIdleTimerDisabled = isDisplayAlwaysOn
+        }
+    }
+    
     var isSimulatorEnabled: Bool = false {
         didSet {
             if isSimulatorEnabled { startSimulation() } else { stopSimulation() }
@@ -45,6 +59,9 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     override init() {
         super.init()
         bleManager.delegate = self
+        
+        // Initialisiere Standard-Timeout im Manager
+        bleManager.setConnectionTimeout(bleConnectionTimeout)
         
         // GPS & Kompass-Infrastruktur initialisieren
         locationManager.delegate = self

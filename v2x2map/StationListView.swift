@@ -19,7 +19,6 @@ struct StationListView: View {
             
             Group {
                 if activeNodes.isEmpty {
-                    // Abwärtskompatibles Empty-State-Design ohne iOS 17 Abhängigkeiten
                     VStack(spacing: 16) {
                         Image(systemName: "antenna.radiowaves.left.and.right.slash")
                             .font(.system(size: 48))
@@ -60,7 +59,6 @@ struct StationListView: View {
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundColor(.secondary)
                                 
-                                // Debug-Zusatzzeile: Koordinaten-Anzeige
                                 Text(String(format: "Lat: %.5f, Lon: %.5f", node.coordinate.latitude, node.coordinate.longitude))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundColor(.gray)
@@ -71,10 +69,8 @@ struct StationListView: View {
                             // Rechte Status- und Geschwindigkeitsanzeige
                             if node.stationType != 2 {
                                 VStack(alignment: .trailing, spacing: 4) {
-                                    Text(String(format: "%.1f", node.speedKmH))
-                                        .font(.system(.title3, design: .rounded))
-                                        .bold()
-                                        + Text(" km/h").font(.footnote).foregroundColor(.secondary)
+                                    // BEHOBEN: '+' deprecated in iOS 26.0 - Ersetzt durch stabiles verschachteltes Text-Layout
+                                    Text("\(Text(String(format: "%.1f", node.speedKmH)).font(.system(.title3, design: .rounded)).bold()) \(Text("km/h").font(.footnote).foregroundColor(.secondary))")
                                     
                                     Text("Live")
                                         .font(.system(size: 9, weight: .bold))
@@ -116,7 +112,3 @@ struct StationListView: View {
     }
 }
 
-#Preview {
-    StationListView()
-        .environment(MapViewModel())
-}

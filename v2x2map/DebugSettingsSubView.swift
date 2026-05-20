@@ -30,6 +30,25 @@ struct DebugSettingsSubView: View {
                 }
             }
             
+            // MARK: - NEU: Verbindungs-Watchdog (Keep-Alive Parameter)
+            Section(
+                header: Text("V2X-Verbindungsüberwachung"),
+                footer: Text("Tritt innerhalb dieser Zeitspanne kein neuer Datenstrom ein, wird die Verbindung automatisch zurückgesetzt, um Hänger im ESP32-Coexistenz-Zyklus aufzulösen.")
+            ) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Inaktivitäts-Timeout")
+                        Spacer()
+                        Text(String(format: "%.1f Sek.", viewModel.bleConnectionTimeout))
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    Slider(value: editableModel.bleConnectionTimeout, in: 2.0...30.0, step: 0.5)
+                        .tint(.orange)
+                }
+                .padding(.vertical, 4)
+            }
+            
             // MARK: - Hexadezimales Datenstrom-Terminal (Jetzt einsehbar)
             Section(header: Text("Datenstrom-Terminal")) {
                 Toggle(isOn: editableModel.isDebugModeEnabled) {

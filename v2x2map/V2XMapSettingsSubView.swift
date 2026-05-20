@@ -26,13 +26,21 @@ struct V2XMapSettingsSubView: View {
                 .padding(.vertical, 2)
             }
             
-            // MARK: - Sektion 2: Apple Maps Overlays
-            Section(header: Text("Overlays")) {
+            // MARK: - Sektion 2: Anzeige & Display
+            Section(header: Text("Anzeige-Optionen")) {
                 Toggle(isOn: editableModel.showTrafficOnMap) {
                     HStack {
                         Image(systemName: "car.2.fill")
                             .foregroundColor(.blue)
                         Text("Apple Traffic anzeigen")
+                    }
+                }
+                
+                Toggle(isOn: editableModel.isDisplayAlwaysOn) {
+                    HStack {
+                        Image(systemName: "sun.max.fill")
+                            .foregroundColor(.orange)
+                        Text("Bildschirm immer eingeschaltet lassen")
                     }
                 }
             }
