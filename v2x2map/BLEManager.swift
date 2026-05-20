@@ -3,7 +3,7 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  Performanter Bluetooth-Zentralmanager mit flexiblem GATT-Scan und Datenstrom-Logging.
+//  Bluetooth-Zentralmanager kalibriert auf die exakte 'ITS-G5-RX' Hardwarekennung.
 //
 
 import Foundation
@@ -42,7 +42,7 @@ final class BLEManager: NSObject {
                 self.delegate?.bleManager(self, didLogDebugMessage: "Fehler: Bluetooth ist am iPhone deaktiviert.")
                 return
             }
-            self.delegate?.bleManager(self, didLogDebugMessage: "Suche GATT-Server (OpenTrafficMap / ESP32-C5)...")
+            self.delegate?.bleManager(self, didLogDebugMessage: "Suche gezielt nach Modulkennung 'ITS-G5-RX'...")
             self.centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         }
     }
@@ -70,8 +70,9 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber) {
         let name = peripheral.name ?? "Unbekanntes Gerät"
         
-        if name.lowercased().contains("traffic") || name.lowercased().contains("esp32") || name.lowercased().contains("v2x") {
-            delegate?.bleManager(self, didLogDebugMessage: "GATT-Server lokalisiert: \(name) [RSSI: \(rssi)]")
+        // KORREKTUR: Filtert nun exakt auf die offizielle OpenTrafficMap Kennung "ITS-G5-RX"
+        if name.uppercased().contains("ITS-G5-RX") || name.lowercased().contains("v2x") {
+            delegate?.bleManager(self, didLogDebugMessage: "Hardware verifiziert: \(name) [RSSI: \(rssi)]. Kopplung initiiert...")
             stopScanning()
             
             discoveredPeripheral = peripheral
@@ -83,7 +84,7 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         reconnectDelay = 1.0
         delegate?.bleManager(self, didUpdateConnectionStatus: true)
-        delegate?.bleManager(self, didLogDebugMessage: "Erfolgreich mit GATT-Server verbunden. Verhandle MTU...")
+        delegate?.bleManager(self, didLogDebugMessage: "Mit ITS-G5-RX verbunden. Optimiere MTU-Bandbreite...")
         
         let negotiatedMTU = peripheral.maximumWriteValueLength(for: .withoutResponse)
         delegate?.bleManager(self, didLogDebugMessage: "MTU-Größe maximiert auf: \(negotiatedMTU) Bytes.")
@@ -96,7 +97,7 @@ extension BLEManager: CBCentralManagerDelegate {
         incomingBuffer.removeAll()
         
         let errorMsg = error?.localizedDescription ?? "Signalverlust"
-        delegate?.bleManager(self, didLogDebugMessage: "Verbindung verloren: \(errorMsg). Starte Reconnect...")
+        delegate?.bleManager(self, didLogDebugMessage: "Verbindung zu ITS-G5-RX verloren: \(errorMsg). Starte Backoff-Scan...")
         
         bleQueue.asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in
             guard let self = self else { return }
@@ -138,7 +139,7 @@ extension BLEManager: CBPeripheralDelegate {
         delegate?.bleManager(self, didLogDebugMessage: "Stream-In: \(hexString)")
         
         while incomingBuffer.count >= 3 {
-            // KORREKTUR: Greift nun typsicher auf das erste Byte des Puffers zu (Behebt Data/BinaryInteger Fehler)
+            // KORREKTUR: Typsicherer Byte-Vergleich verhindert Compilerabsturz
             if incomingBuffer.first != OpenTrafficMapSpecs.startByte {
                 incomingBuffer.removeFirst()
                 continue
