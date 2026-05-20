@@ -10,7 +10,7 @@ import Foundation
 import Network
 import OSLog
 
-public final class UDPReceiver: Sendable {
+@MainActor public final class UDPReceiver: Sendable {
     
     private let port: UInt16
     private let logger = Logger(subsystem: "com.v2x2map.app", category: "UDPReceiver")
@@ -21,11 +21,10 @@ public final class UDPReceiver: Sendable {
     }
     
     private let state = ProtectedState()
-    private let lock = NSLock()
     
     public var onDataReceived: (@Sendable (Data) -> Void)? {
-        get { lock.lock(); defer { lock.unlock() }; return state.onDataReceived }
-        set { lock.lock(); defer { lock.unlock() }; state.onDataReceived = newValue }
+        get { state.onDataReceived }
+        set { state.onDataReceived = newValue }
     }
     
     public init(port: UInt16 = AppConfig.Network.defaultUdpPort) {
@@ -33,12 +32,9 @@ public final class UDPReceiver: Sendable {
     }
     
     public func startListening() async {
-        lock.lock()
         if state.listener != nil {
-            lock.unlock()
             return
         }
-        lock.unlock()
         
         do {
             let parameters = NWParameters.udp
@@ -53,9 +49,7 @@ public final class UDPReceiver: Sendable {
                 self?.handleIncomingConnection(connection)
             }
             
-            lock.lock()
             state.listener = listener
-            lock.unlock()
             
             listener.start(queue: DispatchQueue(label: "com.v2x2map.udp.network", qos: .userInteractive))
             logger.info("UDP-Listener erfolgreich gestartet auf Port \(self.port)")
@@ -65,8 +59,6 @@ public final class UDPReceiver: Sendable {
     }
     
     public func stopListening() {
-        lock.lock()
-        defer { lock.unlock() }
         state.listener?.cancel()
         state.listener = nil
     }
@@ -80,9 +72,7 @@ public final class UDPReceiver: Sendable {
         connection.receiveMessage { [weak self] content, _, isComplete, error in
             guard let self = self else { return }
             if let data = content, !data.isEmpty {
-                self.lock.lock()
                 let callback = self.state.onDataReceived
-                self.lock.unlock()
                 callback?(data)
             }
             if error == nil && isComplete {

@@ -84,6 +84,9 @@ extension BLEManager: CBCentralManagerDelegate {
             delegate?.bleManager(self, didLogDebugMessage: "Kandidat entdeckt: \(name) [RSSI: \(rssi)]. Verbinde…")
             stopScanning()
             
+            // Vermeide doppelte Verbindungsversuche
+            if self.discoveredPeripheral?.identifier == peripheral.identifier { return }
+            
             discoveredPeripheral = peripheral
             discoveredPeripheral?.delegate = self
             centralManager.connect(peripheral, options: nil)
@@ -115,12 +118,12 @@ extension BLEManager: CBCentralManagerDelegate {
         }
         
         bleQueue.asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in
-            guard let self = self else { return }
-            self.reconnectDelay = min(self.reconnectDelay * 2, self.maxReconnectDelay)
-            if let target = self.discoveredPeripheral {
-                self.centralManager.connect(target, options: nil)
+            guard let strongSelf = self else { return }
+            strongSelf.reconnectDelay = min(strongSelf.reconnectDelay * 2, strongSelf.maxReconnectDelay)
+            if let target = strongSelf.discoveredPeripheral {
+                strongSelf.centralManager.connect(target, options: nil)
             } else {
-                self.startScanning()
+                strongSelf.startScanning()
             }
         }
     }
@@ -137,7 +140,7 @@ extension BLEManager: CBCentralManagerDelegate {
 
 // MARK: - CBPeripheralDelegate
 extension BLEManager: CBPeripheralDelegate {
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil, let services = peripheral.services else { return }
         for service in services {
             if service.uuid == OpenTrafficMapSpecs.serviceUUID {
@@ -147,21 +150,44 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
     
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil, let characteristics = service.characteristics else { return }
         for characteristic in characteristics {
             let isTargetUUID = (characteristic.uuid == OpenTrafficMapSpecs.characteristicUUID)
             let hasNotify = characteristic.properties.contains(.notify)
             if isTargetUUID || hasNotify {
                 self.streamingCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
-                delegate?.bleManager(self, didLogDebugMessage: "Notify aktiviert für Characteristic: \(characteristic.uuid.uuidString)")
+                let targetUUID = characteristic.uuid.uuidString
+                bleQueue.asyncAfter(deadline: .now() + 0.15) { [weak self, weak peripheral] in
+                    guard let self = self, let peripheral = peripheral else { return }
+                    peripheral.setNotifyValue(true, for: characteristic)
+                    self.delegate?.bleManager(self, didLogDebugMessage: "Notify-Aktivierung initiiert für: \(targetUUID)")
+                }
                 break
             }
         }
     }
     
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            delegate?.bleManager(self, didLogDebugMessage: "CCCD-Update fehlgeschlagen für: \(characteristic.uuid.uuidString) – \(error.localizedDescription). Versuche erneut…")
+            // Einmaliges, leicht verzögertes Retry der Notify-Aktivierung
+            bleQueue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self = self else { return }
+                if characteristic.properties.contains(.notify) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+            }
+            return
+        }
+        if characteristic.isNotifying {
+            delegate?.bleManager(self, didLogDebugMessage: "CCCD-Update erfolgreich. Notifying aktiv für: \(characteristic.uuid.uuidString)")
+        } else {
+            delegate?.bleManager(self, didLogDebugMessage: "Notifying deaktiviert für: \(characteristic.uuid.uuidString)")
+        }
+    }
+    
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let rawChunk = characteristic.value else { return }
         guard self.streamingCharacteristic == nil || characteristic.uuid == self.streamingCharacteristic?.uuid || characteristic.properties.contains(.notify) else { return }
         
