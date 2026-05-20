@@ -76,6 +76,7 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         // Mindestgröße prüfen: 1 Byte Typ + 4 Bytes ID + 4 Bytes Lat + 4 Bytes Lon + 2 Bytes Speed = 15 Bytes
         guard frame.count >= 15 else { return }
         
+        // KORREKTUR: Deine fehlerfreie Byte-Extraktion behebt den verdeckten Typinferenz-Konflikt
         guard let firstByte = frame.first else { return }
         let type = Int(firstByte)
         
@@ -163,4 +164,3 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         }
     }
 }
-

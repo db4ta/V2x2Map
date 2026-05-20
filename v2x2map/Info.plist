@@ -2,44 +2,43 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>LSHandlerRank</key>
-			<string>Default</string>
-		</dict>
-	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>None</string>
-		</dict>
-	</array>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_v2x._udp</string>
-	</array>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>bluetooth-central</string>
-		<string>location</string>
-		<string>processing</string>
-		<string>audio</string>
-	</array>
-	<key>UILaunchScreen</key>
-	<dict>
-		<key>UIColorName</key>
-		<string>#070B19</string>
-		<key>UIImageName</key>
-		<string>Launchlogo</string>
-		<key>UIImageRespectsSafeAreaInsets</key>
-		<true/>
-	</dict>
-	<key>UISupportedExternalAccessoryProtocols</key>
-	<array>
-		<string>com.apple.elgato.camlive</string>
-		<string>com.ftdi.vcp</string>
-	</array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+    </array>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>None</string>
+        </dict>
+    </array>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_v2x._udp</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Diese App benötigt Zugriff auf das lokale Netzwerk, um hochfrequente V2X-C-ITS-Nachrichten (CAM/DENM) über UDP zu empfangen.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Die App benötigt deine Position, um dich auf der V2X-Karte anzuzeigen und die Karte auf dich zu zentrieren.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Die App benötigt Bluetooth, um sich drahtlos mit dem ESP32-C5 V2X-Empfänger zu verbinden und Live-Verkehrsdaten zu empfangen.</string>
+    <key>UISupportedExternalAccessoryProtocols</key>
+    <array>
+        <string>com.apple.elgato.camlive</string>
+        <string>com.ftdi.vcp</string>
+    </array>
+    <key>UILaunchScreen</key>
+    <dict>
+        <key>UIColorName</key>
+        <string>#070B19</string>
+        <key>UIImageName</key>
+        <string>Launchlogo</string>
+        <key>UIImageRespectsSafeAreaInsets</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

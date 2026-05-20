@@ -271,7 +271,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = v2x2map/Info.plist;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Die App benötigt Bluetooth, um sich drahtlos mit dem ESP32-C5 V2X-Empfänger zu verbinden und Live-Verkehrsdaten zu empfangen.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Diese App benötigt Zugriff auf das lokale Netzwerk, um hochfrequente V2X-C-ITS-Nachrichten (CAM/DENM) über UDP zu empfangen.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Die App benötigt deine Position, um dich auf der V2X-Karte anzuzeigen und die Karte auf dich zu zentrieren.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -308,7 +307,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = v2x2map/Info.plist;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Die App benötigt Bluetooth, um sich drahtlos mit dem ESP32-C5 V2X-Empfänger zu verbinden und Live-Verkehrsdaten zu empfangen.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Diese App benötigt Zugriff auf das lokale Netzwerk, um hochfrequente V2X-C-ITS-Nachrichten (CAM/DENM) über UDP zu empfangen.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Die App benötigt deine Position, um dich auf der V2X-Karte anzuzeigen und die Karte auf dich zu zentrieren.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

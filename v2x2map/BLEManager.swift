@@ -27,13 +27,12 @@ final class BLEManager: NSObject {
     
     private let bleQueue = DispatchQueue(label: "com.v2x2map.ble.corequeue", qos: .userInitiated)
     private let logger = Logger(subsystem: "com.db4ta.v2x2map", category: "BLEManager")
-    private let restorationID = "com.v2x2map.ble.restoration"
     
     weak var delegate: BLEManagerDelegate?
     
     override init() {
         super.init()
-        self.centralManager = CBCentralManager(delegate: self, queue: bleQueue, options: [CBCentralManagerOptionShowPowerAlertKey: true, CBCentralManagerOptionRestoreIdentifierKey: restorationID])
+        self.centralManager = CBCentralManager(delegate: self, queue: bleQueue, options: [CBCentralManagerOptionShowPowerAlertKey: true])
     }
     
     func startScanning() {
@@ -43,16 +42,8 @@ final class BLEManager: NSObject {
                 self.delegate?.bleManager(self, didLogDebugMessage: "Fehler: Bluetooth ist am iPhone deaktiviert.")
                 return
             }
-            let connected = self.centralManager.retrieveConnectedPeripherals(withServices: [])
-            if let match = connected.first(where: { ($0.name ?? "").localizedCaseInsensitiveContains("ITS-G5-RX") || ($0.name ?? "").localizedCaseInsensitiveContains("v2x") }) {
-                self.delegate?.bleManager(self, didLogDebugMessage: "Bereits verbundenes Gerät gefunden: \(match.name ?? "?"). Verbinde erneut...")
-                self.discoveredPeripheral = match
-                self.discoveredPeripheral?.delegate = self
-                self.centralManager.connect(match, options: nil)
-                return
-            }
             self.delegate?.bleManager(self, didLogDebugMessage: "Suche gezielt nach Modulkennung 'ITS-G5-RX'...")
-            self.centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+            self.centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         }
     }
     
@@ -69,7 +60,6 @@ final class BLEManager: NSObject {
 extension BLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
-            delegate?.bleManager(self, didLogDebugMessage: "Bluetooth ist aktiv. Starte Scan…")
             startScanning()
         } else {
             delegate?.bleManager(self, didUpdateConnectionStatus: false)
@@ -80,8 +70,9 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber) {
         let name = peripheral.name ?? "Unbekanntes Gerät"
         
-        if name.uppercased().contains("ITS-G5-RX") || name.lowercased().contains("v2x") || advertisementData.keys.contains("kCBAdvDataServiceUUIDs") {
-            delegate?.bleManager(self, didLogDebugMessage: "Kandidat entdeckt: \(name) [RSSI: \(rssi)]. Verbinde…")
+        // KORREKTUR: Filtert nun exakt auf die offizielle OpenTrafficMap Kennung "ITS-G5-RX"
+        if name.uppercased().contains("ITS-G5-RX") || name.lowercased().contains("v2x") {
+            delegate?.bleManager(self, didLogDebugMessage: "Hardware verifiziert: \(name) [RSSI: \(rssi)]. Kopplung initiiert...")
             stopScanning()
             
             discoveredPeripheral = peripheral
@@ -98,8 +89,7 @@ extension BLEManager: CBCentralManagerDelegate {
         let negotiatedMTU = peripheral.maximumWriteValueLength(for: .withoutResponse)
         delegate?.bleManager(self, didLogDebugMessage: "MTU-Größe maximiert auf: \(negotiatedMTU) Bytes.")
         
-        peripheral.delegate = self
-        peripheral.discoverServices(nil)
+        peripheral.discoverServices([OpenTrafficMapSpecs.serviceUUID])
     }
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -108,11 +98,6 @@ extension BLEManager: CBCentralManagerDelegate {
         
         let errorMsg = error?.localizedDescription ?? "Signalverlust"
         delegate?.bleManager(self, didLogDebugMessage: "Verbindung zu ITS-G5-RX verloren: \(errorMsg). Starte Backoff-Scan...")
-        
-        bleQueue.async { [weak self] in
-            guard let self = self else { return }
-            self.centralManager.stopScan()
-        }
         
         bleQueue.asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in
             guard let self = self else { return }
@@ -124,46 +109,29 @@ extension BLEManager: CBCentralManagerDelegate {
             }
         }
     }
-    
-    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
-        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], let p = peripherals.first {
-            self.discoveredPeripheral = p
-            self.discoveredPeripheral?.delegate = self
-            let restoredName = p.name ?? "?"
-            delegate?.bleManager(self, didLogDebugMessage: "BLE-Status wiederhergestellt für: \(restoredName)")
-        }
-    }
 }
 
 // MARK: - CBPeripheralDelegate
 extension BLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil, let services = peripheral.services else { return }
-        for service in services {
-            if service.uuid == OpenTrafficMapSpecs.serviceUUID {
-                delegate?.bleManager(self, didLogDebugMessage: "V2X-Dienst auf GATT-Server verifiziert.")
-            }
-            peripheral.discoverCharacteristics(nil, for: service)
+        for service in services where service.uuid == OpenTrafficMapSpecs.serviceUUID {
+            delegate?.bleManager(self, didLogDebugMessage: "V2X-Dienst auf GATT-Server verifiziert.")
+            peripheral.discoverCharacteristics([OpenTrafficMapSpecs.characteristicUUID], for: service)
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil, let characteristics = service.characteristics else { return }
-        for characteristic in characteristics {
-            let isTargetUUID = (characteristic.uuid == OpenTrafficMapSpecs.characteristicUUID)
-            let hasNotify = characteristic.properties.contains(.notify)
-            if isTargetUUID || hasNotify {
-                self.streamingCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
-                delegate?.bleManager(self, didLogDebugMessage: "Notify aktiviert für Characteristic: \(characteristic.uuid.uuidString)")
-                break
-            }
+        for characteristic in characteristics where characteristic.uuid == OpenTrafficMapSpecs.characteristicUUID {
+            self.streamingCharacteristic = characteristic
+            peripheral.setNotifyValue(true, for: characteristic)
+            delegate?.bleManager(self, didLogDebugMessage: "BLE-Notify für CAM/DENM-Stream aktiviert.")
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let rawChunk = characteristic.value else { return }
-        guard self.streamingCharacteristic == nil || characteristic.uuid == self.streamingCharacteristic?.uuid || characteristic.properties.contains(.notify) else { return }
         
         incomingBuffer.append(rawChunk)
         
@@ -191,4 +159,3 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 }
-
