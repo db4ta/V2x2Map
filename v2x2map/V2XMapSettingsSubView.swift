@@ -26,7 +26,22 @@ struct V2XMapSettingsSubView: View {
                 .padding(.vertical, 2)
             }
             
-            // MARK: - Sektion 2: Anzeige & Display
+            // MARK: - Sektion 2: Hardware-Koexistenz (COEX)
+            Section(header: Text("Modem-Koexistenz (COEX)")) {
+                Picker("Priorisierung", selection: editableModel.coexPreference) {
+                    Text("Ausgeglichen").tag(0)
+                    Text("V2X-Fokus").tag(1)
+                    Text("BLE-Fokus").tag(2)
+                }
+                .pickerStyle(.segmented)
+                .padding(.vertical, 2)
+                
+                Text("Legt fest, ob der ESP32-C5 vorrangig WLAN (V2X-Sniffing) scannt, um Paketverluste zu minimieren, oder ob er Bluetooth-Intervallen gleichen Vorrang einräumt.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            // MARK: - Sektion 3: Anzeige & Display
             Section(header: Text("Anzeige-Optionen")) {
                 Toggle(isOn: editableModel.showTrafficOnMap) {
                     HStack {

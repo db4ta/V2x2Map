@@ -3,7 +3,7 @@
 //  v2x2map
 //
 //  Created for iOS 26.
-//  Bluetooth-Zentralmanager kalibriert auf die exakte 'ITS-G5-RX' Hardwarekennung.
+//  Bluetooth-Zentralmanager kalibriert auf die exakte 'ITS-G5-RX' Hardwarekennung und COEX-Steuerung.
 //
 
 import Foundation
@@ -33,6 +33,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var centralManager: CBCentralManager!
     private var discoveredPeripheral: CBPeripheral?
     private var streamingCharacteristic: CBCharacteristic?
+    private var coexCharacteristic: CBCharacteristic? // Referenz für COEX-Writes
     private var connectionState: ConnectionState = .disconnected
     
     private var incomingBuffer = Data()
@@ -70,6 +71,27 @@ final class BLEManager: NSObject, @unchecked Sendable {
                 self.resetWatchdog()
             }
         }
+    }
+    
+    /// Sendet den COEX-Modus (0x00, 0x01, 0x02) oder Kanalkommando (0x10) direkt über GATT-Write an die Hardware.
+    func writeCoexPriority(_ command: UInt8) {
+        bleQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard let peripheral = self.discoveredPeripheral,
+                  let characteristic = self.coexCharacteristic,
+                  self.connectionState == .connected else {
+                self.notifyDelegateDidLogDebugMessage("Warnung: COEX-Write ignoriert. Keine aktive Bluetooth-Verbindung.")
+                return
+            }
+            
+            let dataToSend = Data([command])
+            peripheral.writeValue(dataToSend, for: characteristic, type: .withResponse)
+            self.notifyDelegateDidLogDebugMessage("GATT Write abgesetzt: COEX-Befehl 0x\(String(format: "%02X", command))")
+        }
+    }
+    
+    func writeCoexMode(_ command: UInt8) {
+        writeCoexPriority(command)
     }
     
     func startScanning() {
@@ -207,7 +229,6 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber) {
         
         // Wenn wir nicht im disconnected Status sind, ignorieren wir rigoros alle eintreffenden Werbepakete.
-        // Das unterbindet das unkontrollierte Absenden paralleler connect()-Befehle!
         guard connectionState == .disconnected else { return }
         
         if isValidV2XDevice(peripheral: peripheral, advertisementData: advertisementData) {
@@ -240,7 +261,7 @@ extension BLEManager: CBCentralManagerDelegate {
         peripheral.discoverServices([OpenTrafficMapSpecs.serviceUUID]) // Gezielt nach dem V2X-Dienst suchen
     }
     
-    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    func centralManager(_ central: CBPeripheral, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectionState = .disconnected
         notifyDelegateDidLogDebugMessage("Verbindungsaufbau mit V2X-Empfänger fehlgeschlagen: \(error?.localizedDescription ?? "Unbekannter Fehler")")
         startScanning()
@@ -250,6 +271,8 @@ extension BLEManager: CBCentralManagerDelegate {
         stopWatchdog()
         connectionState = .disconnected
         incomingBuffer.removeAll()
+        coexCharacteristic = nil
+        streamingCharacteristic = nil
         
         let errorMsg = error?.localizedDescription ?? "Signalverlust"
         notifyDelegateDidLogDebugMessage("Verbindung zu V2X-Empfänger verloren: \(errorMsg). Starte Backoff-Scan...")
@@ -290,16 +313,15 @@ extension BLEManager: CBPeripheralDelegate {
             if service.uuid == OpenTrafficMapSpecs.serviceUUID {
                 notifyDelegateDidLogDebugMessage("V2X-Dienst auf GATT-Server verifiziert.")
             }
-            peripheral.discoverCharacteristics([OpenTrafficMapSpecs.characteristicUUID], for: service) // Nur die Streaming-Char suchen
+            // Entdecke sowohl die Datenstrom- als auch die COEX-Kontroll-Charakteristik
+            peripheral.discoverCharacteristics([OpenTrafficMapSpecs.characteristicUUID, OpenTrafficMapSpecs.coexCharacteristicUUID], for: service)
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil, let characteristics = service.characteristics else { return }
         for characteristic in characteristics {
-            let isTargetUUID = (characteristic.uuid == OpenTrafficMapSpecs.characteristicUUID)
-            let hasNotify = characteristic.properties.contains(.notify)
-            if isTargetUUID || hasNotify {
+            if characteristic.uuid == OpenTrafficMapSpecs.characteristicUUID {
                 self.streamingCharacteristic = characteristic
                 let targetUUID = characteristic.uuid.uuidString
                 
@@ -309,7 +331,9 @@ extension BLEManager: CBPeripheralDelegate {
                     peripheral.setNotifyValue(true, for: characteristic)
                     self.notifyDelegateDidLogDebugMessage("Notify-Aktivierung initiiert für: \(targetUUID)")
                 }
-                break
+            } else if characteristic.uuid == OpenTrafficMapSpecs.coexCharacteristicUUID {
+                self.coexCharacteristic = characteristic
+                notifyDelegateDidLogDebugMessage("COEX-Steuerleitung verifiziert (GATT 2A68)")
             }
         }
     }
@@ -365,5 +389,12 @@ extension BLEManager: CBPeripheralDelegate {
             }
         }
     }
+    
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            notifyDelegateDidLogDebugMessage("Fehler beim Senden des COEX-Wertes: \(error.localizedDescription)")
+        } else {
+            notifyDelegateDidLogDebugMessage("ESP32-C5 hat den COEX-Befehl erfolgreich quittiert.")
+        }
+    }
 }
-

@@ -38,6 +38,21 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         }
     }
     
+    // COEX-Präferenz (0 = Balanced, 1 = Wi-Fi/V2X Priorität, 2 = BLE Priorität)
+    var coexPreference: Int = 0 {
+        didSet {
+            let valueToByte: UInt8
+            switch coexPreference {
+            case 0: valueToByte = 0x00 // Balanced Mode
+            case 1: valueToByte = 0x01 // Wi-Fi focus (Prefer Wi-Fi)
+            case 2: valueToByte = 0x02 // BLE focus
+            default: valueToByte = 0x00
+            }
+            // Übergabe direkt über CoreBluetooth an den ESP32-C5
+            bleManager.writeCoexPriority(valueToByte)
+        }
+    }
+    
     // Deaktiviert den Auto-Lock / Ruhezustand des iPhones für den Live-Betrieb
     var isDisplayAlwaysOn: Bool = false {
         didSet {
@@ -52,9 +67,12 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     }
     
     private let bleManager = BLEManager()
+    private let udpReceiver = UDPReceiver(port: AppConfig.Network.defaultUdpPort)
     private var simulationTimer: Timer?
     private let locationManager = CLLocationManager()
     private var lastKnownGPSLocation: CLLocation?
+    
+    private let decodingQueue = DispatchQueue(label: "com.v2x2map.decoding", qos: .userInitiated)
     
     override init() {
         super.init()
@@ -69,6 +87,9 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         locationManager.requestWhenInUseAuthorization()
         locationManager.startUpdatingLocation()
         locationManager.startUpdatingHeading()
+        
+        // Starte das UDP-Subsystem für Wi-Fi Telemetrie
+        setupUDPReceiver()
     }
     
     func initiateBluetoothSubsystem() {
@@ -77,6 +98,30 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     
     func triggerManualScan() {
         bleManager.startScanning()
+    }
+    
+    private func setupUDPReceiver() {
+        udpReceiver.onDataReceived = { [weak self] rawData in
+            guard let self = self else { return }
+            // Asynchrones Parsing komplett vom Main Thread fernhalten!
+            self.decodingQueue.async {
+                do {
+                    let station = try ASN1Decoder.decodeV2X(from: rawData)
+                    Task { @MainActor in
+                        self.processDecodedStation(station)
+                    }
+                } catch {
+                    // Fallback, falls kein vollständiges GeoNet Paket vorliegt
+                    Task { @MainActor in
+                        self.loggerFallbackParse(rawData)
+                    }
+                }
+            }
+        }
+        
+        Task {
+            await udpReceiver.startListening()
+        }
     }
     
     // MARK: - BLEManagerDelegate
@@ -90,9 +135,54 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     }
     
     func bleManager(_ manager: BLEManager, didAssembleCITSFrame frame: Data) {
-        // Mindestgröße prüfen: 1 Byte Typ + 4 Bytes ID + 4 Bytes Lat + 4 Bytes Lon + 2 Bytes Speed = 15 Bytes
-        guard frame.count >= 15 else { return }
+        // Zeitkritische Decodierung der BLE-Bytes im Hintergrund durchführen
+        decodingQueue.async { [weak self] in
+            guard let self = self else { return }
+            do {
+                let station = try ASN1Decoder.decodeV2X(from: frame)
+                Task { @MainActor in
+                    self.processDecodedStation(station)
+                }
+            } catch {
+                Task { @MainActor in
+                    self.loggerFallbackParse(frame)
+                }
+            }
+        }
+    }
+    
+    private func logMessage(_ message: String) {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        self.debugLogs.insert("[\(timestamp)] \(message)", at: 0)
+        if self.debugLogs.count > 40 { self.debugLogs.removeLast() }
+    }
+    
+    private func processDecodedStation(_ station: MapStation) {
+        let id = UInt32(station.stationID)
+        let speedKmH = station.speed * 3.6 // m/s in km/h umrechnen
+        let stationType = station.isHazard ? 2 : 1
         
+        self.citsNodes[id] = CITSNode(
+            id: id,
+            coordinate: station.coordinate,
+            speedKmH: speedKmH,
+            timestamp: station.lastUpdatedAt,
+            stationType: stationType
+        )
+        
+        if !mapInteractionIsActive {
+            SwiftUI.withAnimation(.easeInOut(duration: 0.3)) {
+                let region = MapKit.MKCoordinateRegion(
+                    center: station.coordinate,
+                    span: MapKit.MKCoordinateSpan(latitudeDelta: 0.003, longitudeDelta: 0.003)
+                )
+                self.mapPosition = MapKit.MapCameraPosition.region(region)
+            }
+        }
+    }
+    
+    private func loggerFallbackParse(_ frame: Data) {
+        guard frame.count >= 15 else { return }
         guard let firstByte = frame.first else { return }
         let type = Int(firstByte)
         
@@ -105,38 +195,14 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         let longitude = Double(lonRaw) / 10000000.0
         let speedKmH = (Double(speedRaw) * 0.01) * 3.6
         
-        processIncomingNode(id: stationID, lat: latitude, lon: longitude, speed: speedKmH, type: type)
-    }
-    
-    private func logMessage(_ message: String) {
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        self.debugLogs.insert("[\(timestamp)] \(message)", at: 0)
-        if self.debugLogs.count > 40 { self.debugLogs.removeLast() }
-    }
-    
-    private func processIncomingNode(id: UInt32, lat: Double, lon: Double, speed: Double, type: Int) {
-        let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
-        
-        // Kompiliert jetzt dank sauberer Typableitung fehlerfrei
-        self.citsNodes[id] = CITSNode(
-            id: id,
+        let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        self.citsNodes[stationID] = CITSNode(
+            id: stationID,
             coordinate: coordinate,
-            speedKmH: speed,
+            speedKmH: speedKmH,
             timestamp: Date(),
             stationType: type
         )
-        
-        // Kamera zoomt nur automatisch nach, wenn der Nutzer die Karte NICHT aktiv verschiebt (Lösen des Zoom-Locks)
-        if !mapInteractionIsActive {
-            SwiftUI.withAnimation(.easeInOut(duration: 0.3)) {
-                let region = MapKit.MKCoordinateRegion(
-                    center: coordinate,
-                    span: MapKit.MKCoordinateSpan(latitudeDelta: 0.003, longitudeDelta: 0.003)
-                )
-                // Kompiliert jetzt ebenfalls einwandfrei im Macro-Scope
-                self.mapPosition = MapKit.MapCameraPosition.region(region)
-            }
-        }
     }
     
     // MARK: - CLLocationManagerDelegate (Echtes GPS & Kompass)
@@ -151,7 +217,7 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         }
     }
     
-    // MARK: - GPS-gekoppelter Simulator (RSU / OBU um dich herum)
+    // MARK: - GPS-gekoppelter Simulator
     private func startSimulation() {
         stopSimulation()
         isConnected = true
@@ -166,7 +232,14 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
                 let speed = Double.random(in: 35.0...55.0)
                 
                 self.logMessage("SIM-OUT: Live-GPS CAM Frame generiert für ID 0x00E2")
-                self.processIncomingNode(id: 0x00E2, lat: simLat, lon: simLon, speed: speed, type: 1)
+                let coordinate = CLLocationCoordinate2D(latitude: simLat, longitude: simLon)
+                self.citsNodes[0x00E2] = CITSNode(
+                    id: 0x00E2,
+                    coordinate: coordinate,
+                    speedKmH: speed,
+                    timestamp: Date(),
+                    stationType: 1
+                )
             }
         }
     }
@@ -180,4 +253,3 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
         }
     }
 }
-
