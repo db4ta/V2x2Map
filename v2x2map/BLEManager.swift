@@ -17,7 +17,6 @@ private enum ConnectionState {
     case connected
 }
 
-@MainActor
 protocol BLEManagerDelegate: AnyObject {
     func bleManager(_ manager: BLEManager, didAssembleCITSFrame frame: Data)
     func bleManager(_ manager: BLEManager, didUpdateConnectionStatus connected: Bool)
@@ -332,6 +331,13 @@ extension BLEManager: CBPeripheralDelegate {
                 }
                 notifyDelegateDidLogDebugMessage("Notify-Aktivierung initiiert für: \(targetUUID)")
                 
+                // Firmware-Workaround: BLE-Session offen halten durch sofortiges Keep-Alive
+                // Sende Dummy-Byte (0x00) ohne Response direkt nach Notify-Setzen
+                if let coexChar = self.coexCharacteristic {
+                    peripheral.writeValue(Data([0x00]), for: coexChar, type: .withoutResponse)
+                    self.notifyDelegateDidLogDebugMessage("Direktes BLE-Keep-Alive (Dummy-Byte 0x00) gesendet.")
+                }
+                
             } else if characteristic.uuid == OpenTrafficMapSpecs.coexCharacteristicUUID {
                 self.coexCharacteristic = characteristic
                 notifyDelegateDidLogDebugMessage("COEX-Steuerleitung verifiziert (GATT 2A68)")
@@ -400,3 +406,4 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 }
+
