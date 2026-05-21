@@ -10,10 +10,10 @@ import Foundation
 import Network
 import CoreBluetooth
 import OSLog
+import Combine // Importiert das ObservableObject-Protokoll
 
-@MainActor
-public final class V2xCommandManager: Sendable {
-    public static let shared = V2xCommandManager()
+final class V2xCommandManager: ObservableObject, @unchecked Sendable {
+    static let shared = V2xCommandManager()
     
     private let logger = Logger(subsystem: "com.db4ta.v2x2map", category: "V2xCommandManager")
     private let queue = DispatchQueue(label: "com.v2x2map.command.queue", qos: .utility)
@@ -21,20 +21,23 @@ public final class V2xCommandManager: Sendable {
     private let esp32IP = "192.168.4.1" // Standard ESP32 Access-Point Gateway IP
     private let controlPort: UInt16 = 8888  // ESP32 Steuerport für COEX-Vorgaben
     
+    /// Aktiver BLEManager für direkte GATT-Writes
+    weak var activeBLEManager: BLEManager?
+    
     private init() {}
     
-    public enum CoexMode: UInt8 {
+    enum CoexMode: UInt8 {
+        case balanced = 0x00
         case preferWiFi = 0x01
-        case balanced = 0x02
+        case preferBLE = 0x02
     }
     
     /// Sendet ein synchronisiertes Konfigurationsbyte an das RF-Frontend des ESP32-C5
-    public func sendCoexCommand(_ mode: CoexMode, viaBLEPeripheral peripheral: CBPeripheral? = nil, characteristic: CBCharacteristic? = nil) {
+    func sendCoexCommand(mode: UInt8) {
         // Option A: Über BLE (falls aktiv verbunden)
-        if let peripheral = peripheral, let characteristic = characteristic, peripheral.state == .connected {
-            let data = Data([mode.rawValue])
-            peripheral.writeValue(data, for: characteristic, type: .withResponse)
-            logger.info("COEX-Modus über BLE-GATT gesendet: \(mode == .preferWiFi ? "Prefer Wi-Fi" : "Balanced")")
+        if let bleManager = activeBLEManager {
+            bleManager.writeCoexPriority(mode)
+            logger.info("COEX-Modus über BLE-GATT gesendet: 0x\(String(format: "%02X", mode))")
             return
         }
         
@@ -47,12 +50,12 @@ public final class V2xCommandManager: Sendable {
         
         connection.stateUpdateHandler = { [weak self] state in
             if case .ready = state {
-                let data = Data([mode.rawValue])
+                let data = Data([mode])
                 connection.send(content: data, completion: .contentProcessed({ error in
                     if let error = error {
                         self?.logger.error("COEX-Kommando konnte nicht gesendet werden: \(error.localizedDescription)")
                     } else {
-                        self?.logger.info("COEX-Modus über UDP gesendet: \(mode == .preferWiFi ? "Prefer Wi-Fi" : "Balanced")")
+                        self?.logger.info("COEX-Modus über UDP gesendet: 0x\(String(format: "%02X", mode))")
                     }
                     connection.cancel()
                 }))
@@ -63,5 +66,10 @@ public final class V2xCommandManager: Sendable {
         }
         
         connection.start(queue: queue)
+    }
+    
+    @available(*, deprecated, message: "Nutze sendCoexCommand(mode:)")
+    func sendCoexCommand(_ mode: CoexMode, viaBLEPeripheral peripheral: CBPeripheral? = nil, characteristic: CBCharacteristic? = nil) {
+        sendCoexCommand(mode: mode.rawValue)
     }
 }

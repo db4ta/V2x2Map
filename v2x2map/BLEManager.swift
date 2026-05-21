@@ -7,8 +7,15 @@
 //
 
 import Foundation
-import CoreBluetooth
+@preconcurrency import CoreBluetooth
 import OSLog
+
+// Strikte State-Machine zur Vermeidung von CoreBluetooth-Race-Conditions.
+private enum ConnectionState {
+    case disconnected
+    case connecting
+    case connected
+}
 
 @MainActor
 protocol BLEManagerDelegate: AnyObject {
@@ -21,13 +28,6 @@ protocol BLEManagerDelegate: AnyObject {
 // @unchecked Sendable garantiert die Thread-Sicherheit unter Swift 6 Concurrency.
 final class BLEManager: NSObject, @unchecked Sendable {
     private let bleQueue = DispatchQueue(label: "com.v2x2map.ble.corequeue", qos: .userInitiated)
-    
-    // Strikte State-Machine zur Vermeidung von CoreBluetooth-Race-Conditions
-    private enum ConnectionState {
-        case disconnected
-        case connecting
-        case connected
-    }
     
     // Die folgenden Variablen werden ausschließlich auf der seriellen bleQueue gelesen und geschrieben.
     private var centralManager: CBCentralManager!
@@ -137,7 +137,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
         }
     }
     
-    // MARK: - Watchdog Steuerung
+    // MARK: - Watchdog Steuerung (Läuft threadsicher auf bleQueue)
     private func resetWatchdog() {
         watchdogWorkItem?.cancel()
         
@@ -188,7 +188,8 @@ final class BLEManager: NSObject, @unchecked Sendable {
         return lowerName.contains("opentrafficmap") ||
                lowerName.contains("otm") ||
                lowerName.contains("its-g5-rx") ||
-               lowerName.contains("v2x")
+               lowerName.contains("v2x") ||
+               lowerName.contains("nimble")
     }
     
     // MARK: - Threadsichere Haupt-Thread-Dispatcher
@@ -227,15 +228,13 @@ extension BLEManager: CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber) {
-        
-        // Wenn wir nicht im disconnected Status sind, ignorieren wir rigoros alle eintreffenden Werbepakete.
+        // Wenn wir nicht im disconnected Status sind, ignorieren wir alle eintreffenden Werbepakete.
         guard connectionState == .disconnected else { return }
         
         if isValidV2XDevice(peripheral: peripheral, advertisementData: advertisementData) {
             let detectedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "V2X-Empfänger"
             notifyDelegateDidLogDebugMessage("OpenTrafficMap verifiziert: \(detectedName) [RSSI: \(rssi)]. Verbinde…")
             
-            // Synchroner Zustandswechsel blockiert sofort alle weiteren didDiscover-Aufrufe
             connectionState = .connecting
             centralManager.stopScan()
             
@@ -252,16 +251,14 @@ extension BLEManager: CBCentralManagerDelegate {
         reconnectDelay = 1.0
         connectionState = .connected
         notifyDelegateDidUpdateConnectionStatus(true)
-        notifyDelegateDidLogDebugMessage("Erfolgreich mit \(peripheral.name ?? "OpenTrafficMap") verbunden. Optimiere MTU-Bandbreite...")
         
-        let negotiatedMTU = peripheral.maximumWriteValueLength(for: .withoutResponse)
-        notifyDelegateDidLogDebugMessage("MTU-Größe maximiert auf: \(negotiatedMTU) Bytes.")
-        
+        // Absolut verzögerungsfreie Kommunikation auf dem Hintergrund-Queue:
+        notifyDelegateDidLogDebugMessage("Erfolgreich mit \(peripheral.name ?? "OpenTrafficMap") verbunden. Starte Service-Discovery...")
         peripheral.delegate = self
-        peripheral.discoverServices([OpenTrafficMapSpecs.serviceUUID]) // Gezielt nach dem V2X-Dienst suchen
+        peripheral.discoverServices([OpenTrafficMapSpecs.serviceUUID])
     }
     
-    func centralManager(_ central: CBPeripheral, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectionState = .disconnected
         notifyDelegateDidLogDebugMessage("Verbindungsaufbau mit V2X-Empfänger fehlgeschlagen: \(error?.localizedDescription ?? "Unbekannter Fehler")")
         startScanning()
@@ -281,7 +278,6 @@ extension BLEManager: CBCentralManagerDelegate {
         
         bleQueue.asyncAfter(deadline: .now() + reconnectDelay) { [weak self] in
             guard let self = self else { return }
-            // Verhindert ein automatisches Reconnect-Spamming, falls der Status sich geändert hat
             guard self.connectionState == .disconnected else { return }
             
             self.reconnectDelay = min(self.reconnectDelay * 2, self.maxReconnectDelay)
@@ -313,24 +309,29 @@ extension BLEManager: CBPeripheralDelegate {
             if service.uuid == OpenTrafficMapSpecs.serviceUUID {
                 notifyDelegateDidLogDebugMessage("V2X-Dienst auf GATT-Server verifiziert.")
             }
-            // Entdecke sowohl die Datenstrom- als auch die COEX-Kontroll-Charakteristik
             peripheral.discoverCharacteristics([OpenTrafficMapSpecs.characteristicUUID, OpenTrafficMapSpecs.coexCharacteristicUUID], for: service)
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil, let characteristics = service.characteristics else { return }
+        
+        // Optimierte MTU direkt auslesen (ohne Thread-Wechsel)
+        let negotiatedMTU = peripheral.maximumWriteValueLength(for: .withoutResponse)
+        notifyDelegateDidLogDebugMessage("Optimierte MTU-Bandbreite ausgehandelt: \(negotiatedMTU) Bytes.")
+        
         for characteristic in characteristics {
             if characteristic.uuid == OpenTrafficMapSpecs.characteristicUUID {
                 self.streamingCharacteristic = characteristic
                 let targetUUID = characteristic.uuid.uuidString
                 
-                // Hardware-Schutz: 150ms Verzögerung für stabilen ESP32 CCCD Handshake
-                bleQueue.asyncAfter(deadline: .now() + 0.15) { [weak self, weak peripheral] in
-                    guard let self = self, let peripheral = peripheral else { return }
+                // 150ms ESP32 Einschwingzeit vor dem CCCD Notify-Write
+                bleQueue.asyncAfter(deadline: .now() + 0.15) { [weak peripheral, weak characteristic] in
+                    guard let peripheral = peripheral, let characteristic = characteristic else { return }
                     peripheral.setNotifyValue(true, for: characteristic)
-                    self.notifyDelegateDidLogDebugMessage("Notify-Aktivierung initiiert für: \(targetUUID)")
                 }
+                notifyDelegateDidLogDebugMessage("Notify-Aktivierung initiiert für: \(targetUUID)")
+                
             } else if characteristic.uuid == OpenTrafficMapSpecs.coexCharacteristicUUID {
                 self.coexCharacteristic = characteristic
                 notifyDelegateDidLogDebugMessage("COEX-Steuerleitung verifiziert (GATT 2A68)")
@@ -341,17 +342,18 @@ extension BLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         if let error = error {
             notifyDelegateDidLogDebugMessage("CCCD-Update fehlgeschlagen für: \(characteristic.uuid.uuidString) – \(error.localizedDescription). Versuche erneut…")
-            bleQueue.asyncAfter(deadline: .now() + 0.2) { [weak self, weak peripheral] in
-                guard let self = self, let peripheral = peripheral else { return }
+            bleQueue.asyncAfter(deadline: .now() + 0.2) { [weak peripheral, weak characteristic] in
+                guard let peripheral = peripheral, let characteristic = characteristic else { return }
                 if characteristic.properties.contains(.notify) {
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
             }
             return
         }
+        
         if characteristic.isNotifying {
             notifyDelegateDidLogDebugMessage("CCCD-Update erfolgreich. Notifying aktiv für: \(characteristic.uuid.uuidString)")
-            resetWatchdog() // Starte Watchdog sobald der Datenstrom theoretisch offen ist
+            resetWatchdog() // Watchdog erst scharf schalten, wenn wir tatsächlich streamen!
         } else {
             notifyDelegateDidLogDebugMessage("Notifying deaktiviert für: \(characteristic.uuid.uuidString)")
             stopWatchdog()
@@ -362,7 +364,7 @@ extension BLEManager: CBPeripheralDelegate {
         guard error == nil, let rawChunk = characteristic.value else { return }
         guard self.streamingCharacteristic == nil || characteristic.uuid == self.streamingCharacteristic?.uuid || characteristic.properties.contains(.notify) else { return }
         
-        // Daten erhalten -> Watchdog zurücksetzen
+        // Watchdog zurücksetzen
         resetWatchdog()
         
         incomingBuffer.append(rawChunk)

@@ -31,7 +31,7 @@ public final class UDPReceiver: Sendable {
         set { state.onDataReceived = newValue }
     }
     
-    public init(port: UInt16 = 26262) {
+    nonisolated public init(port: UInt16 = 26262) {
         self.port = port
     }
     
@@ -55,7 +55,7 @@ public final class UDPReceiver: Sendable {
                 case .ready:
                     self.logger.info("UDP-Listener bereit auf Port \(self.port)")
                 case .failed(let error):
-                    self.logger.error("UDP-Listener fehlgeschlagen: \(error.localizedDescription)")
+                    self.logger.error("UDP-Listener failed: \(error.localizedDescription)")
                     Task { @MainActor in self.stopListening() }
                 case .waiting(let error):
                     // WICHTIG: Im .waiting Zustand (z.B. während ESP32-Bluetooth-Slot blockiert) 

@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import Combine // Garantiert saubere Auflösung von ObservableObject-Referenzen in SwiftUI-Views
 
 struct WirelessSettingsView: View {
     @Environment(MapViewModel.self) private var viewModel
@@ -52,9 +53,43 @@ struct WirelessSettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
+            
+            // MARK: - Sektion 3: Coexistenz-Steuerung (COEX)
+            Section(header: Text("Hardware-Steuerung")) {
+                CoexSettingsView(commandManager: V2xCommandManager.shared)
+                    .padding(.vertical, 4)
+            }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Funk-Einstellungen")
+    }
+}
+
+// Visualisiertes Steuerungselement laut Spezifikation
+struct CoexSettingsView: View {
+    @ObservedObject var commandManager: V2xCommandManager
+    @State private var selectedMode: UInt8 = 0x00
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Hardware-Koexistenz (COEX)")
+                .font(.headline)
+            
+            Picker("Prioritätsmodus", selection: $selectedMode) {
+                Text("Ausgeglichen").tag(UInt8(0x00))
+                Text("V2X-Fokus (Hohe Last)").tag(UInt8(0x01))
+                Text("Bluetooth-Stabilität").tag(UInt8(0x02))
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .onChange(of: selectedMode) { _, newMode in
+                // Ruft deinen Command-Manager mit der neuen iOS 17-Signatur auf
+                commandManager.sendCoexCommand(mode: newMode)
+            }
+            
+            Text("Hinweis: Der V2X-Fokus kann bei hoher Kanallast zu kurzzeitigen Verbindungsabbrüchen unter iOS führen.")
+                .font(.caption)
+                .foregroundColor(.gray)
+        }
     }
 }
 

@@ -18,7 +18,8 @@ public struct OpenTrafficMapSpecs {
     public static let characteristicUUID = CBUUID(string: "2A67")
     /// Eigene COEX-Steuerungs-Charakteristik (2A68) - Write
     public static let coexCharacteristicUUID = CBUUID(string: "2A68")
-    /// Start-Byte der C-ITS Datenframes
+    
+    /// Paket-Synchronisations-Byte (STX) laut OpenTrafficMap-Firmwarespezifikation
     public static let startByte: UInt8 = 0x7E
 }
 

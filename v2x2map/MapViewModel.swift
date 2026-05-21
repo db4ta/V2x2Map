@@ -67,7 +67,7 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     }
     
     private let bleManager = BLEManager()
-    private let udpReceiver = UDPReceiver(port: AppConfig.Network.defaultUdpPort)
+    private let udpReceiver: UDPReceiver
     private var simulationTimer: Timer?
     private let locationManager = CLLocationManager()
     private var lastKnownGPSLocation: CLLocation?
@@ -75,8 +75,14 @@ final class MapViewModel: NSObject, BLEManagerDelegate, CLLocationManagerDelegat
     private let decodingQueue = DispatchQueue(label: "com.v2x2map.decoding", qos: .userInitiated)
     
     override init() {
+        // Explizite Initialisierung des UDPReceivers im MainActor-isolierten Kontext
+        self.udpReceiver = UDPReceiver(port: AppConfig.Network.defaultUdpPort)
+        
         super.init()
         bleManager.delegate = self
+        
+        // Verknüpfe den V2xCommandManager mit unserem bleManager, damit COEX-Updates über BLE laufen
+        V2xCommandManager.shared.activeBLEManager = bleManager
         
         // Initialisiere Standard-Timeout im Manager
         bleManager.setConnectionTimeout(bleConnectionTimeout)
